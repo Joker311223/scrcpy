@@ -868,6 +868,41 @@ button, input { font: inherit; }
 .download-meta span { margin-bottom: 2px; color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .download-meta strong { font-size: 13px; }
 
+.dependency-notice {
+  margin-bottom: 18px;
+  padding: 17px;
+  border: 1px solid rgba(255, 184, 77, .24);
+  border-radius: 15px;
+  background: rgba(255, 166, 40, .055);
+}
+
+.dependency-notice-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 9px;
+}
+
+.dependency-notice-title span {
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 184, 77, .24);
+  border-radius: 7px;
+  color: #ffc56c;
+  background: rgba(255, 184, 77, .08);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: .08em;
+}
+
+.dependency-notice-title strong { color: #f3eee6; font-size: 12px; }
+.dependency-notice p { margin: 0; color: #b8b1a6; font-size: 12px; }
+.dependency-notice pre { margin: 12px 0; padding: 10px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(3,5,3,.7); white-space: pre-wrap; }
+.dependency-notice pre code { color: #e9eee9; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dependency-notice pre span { margin-right: 7px; color: var(--green); }
+.dependency-notice small { display: block; color: #8e877e; font-size: 10px; line-height: 1.55; }
+.dependency-notice small code, .faq-list p code { color: #d5dbd6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
 .download-address {
   position: relative;
   display: block;
@@ -1072,6 +1107,7 @@ button, input { font: inherit; }
   .download-actions .button { width: 100%; }
   .download-meta { grid-template-columns: 1fr; }
   .download-panel { padding: 16px; border-radius: 19px; }
+  .dependency-notice-title { align-items: flex-start; flex-direction: column; gap: 7px; }
   .requirements-section { padding-top: 40px; }
   .requirements-card { width: calc(100% - 20px); padding: 36px 24px; border-radius: 26px; }
   .requirements-actions { flex-direction: column; }
