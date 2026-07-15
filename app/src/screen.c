@@ -4,6 +4,7 @@
 #include <string.h>
 #include <SDL3/SDL.h>
 
+#include "embedded.h"
 #include "events.h"
 #include "icon.h"
 #include "options.h"
@@ -17,6 +18,10 @@
 static void
 set_aspect_ratio(struct sc_screen *screen, struct sc_size content_size) {
     assert(content_size.width && content_size.height);
+
+    if (screen->embedded) {
+        return;
+    }
 
     if (screen->window_aspect_ratio_lock) {
         float ar = (float) content_size.width / content_size.height;
@@ -374,10 +379,10 @@ sc_screen_on_resize(struct sc_screen *screen, const SDL_WindowEvent *event) {
 static bool
 event_watcher(void *data, SDL_Event *event) {
     struct sc_screen *screen = data;
-    assert(screen->video);
 
     if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
             || event->type == SDL_EVENT_WINDOW_RESIZED) {
+        assert(screen->video);
         // In practice, it seems to always be called from the same thread in
         // that specific case. Anyway, it's just a workaround.
         sc_screen_on_resize(screen, &event->window);
@@ -418,7 +423,10 @@ sc_screen_frame_sink_open(struct sc_frame_sink *sink,
     size->width = session->video.width;
     size->height = session->video.height;
 
-    bool ok = sc_push_event_with_data(SC_EVENT_OPEN_WINDOW, size);
+    bool ok = screen->embedded
+            ? sc_embedded_post_event(screen->embedded_session,
+                                     SC_EVENT_OPEN_WINDOW, size)
+            : sc_push_event_with_data(SC_EVENT_OPEN_WINDOW, size);
     if (!ok) {
         free(size);
         return false;
@@ -451,7 +459,8 @@ sc_screen_frame_sink_push(struct sc_frame_sink *sink, const AVFrame *frame) {
     sc_mutex_lock(&screen->mutex);
     bool previous_skipped = sc_frame_buffer_has_frame(&screen->fb);
     bool ok = sc_frame_buffer_push(&screen->fb, frame);
-    screen->prevent_auto_resize = screen->current_session.video.client_resized;
+    screen->prevent_auto_resize = screen->embedded
+                               || screen->current_session.video.client_resized;
     sc_mutex_unlock(&screen->mutex);
     if (!ok) {
         return false;
@@ -463,7 +472,10 @@ sc_screen_frame_sink_push(struct sc_frame_sink *sink, const AVFrame *frame) {
         // this new frame instead
     } else {
         // Post the event on the UI thread
-        bool ok = sc_push_event(SC_EVENT_NEW_FRAME);
+        bool ok = screen->embedded
+                ? sc_embedded_post_event(screen->embedded_session,
+                                         SC_EVENT_NEW_FRAME, NULL)
+                : sc_push_event(SC_EVENT_NEW_FRAME);
         if (!ok) {
             return false;
         }
@@ -495,6 +507,9 @@ sc_screen_init(struct sc_screen *screen,
 
     screen->video = params->video;
     screen->camera = params->camera;
+    screen->embedded = params->embedded;
+    screen->embedded_session = params->embedded_session;
+    screen->event_watcher_added = false;
     screen->window_aspect_ratio_lock = params->window_aspect_ratio_lock;
     screen->render_fit = params->render_fit;
     screen->flex_display = params->flex_display;
@@ -573,7 +588,9 @@ sc_screen_init(struct sc_screen *screen,
 
     // The window will be positioned and sized on first video frame
     screen->window =
-        sc_sdl_create_window(title, x, y, width, height, window_flags);
+        sc_sdl_create_window(title, x, y, width, height, window_flags,
+                             params->embedded_nswindow,
+                             params->embedded_nsview);
     if (!screen->window) {
         LOGE("Could not create window: %s", SDL_GetError());
         goto error_destroy_fps_counter;
@@ -676,6 +693,7 @@ sc_screen_init(struct sc_screen *screen,
 #ifdef CONTINUOUS_RESIZING_WORKAROUND
     if (screen->video) {
         ok = SDL_AddEventWatch(event_watcher, screen);
+        screen->event_watcher_added = ok;
         if (!ok) {
             LOGW("Could not add event watcher for continuous resizing: %s",
                  SDL_GetError());
@@ -701,7 +719,9 @@ sc_screen_init(struct sc_screen *screen,
     if (!screen->video) {
         // Show the window immediately
         screen->window_shown = true;
-        sc_sdl_show_window(screen->window);
+        if (!screen->embedded) {
+            sc_sdl_show_window(screen->window);
+        }
 
         if (sc_screen_is_relative_mode(screen)) {
             // Capture mouse immediately if video mirroring is disabled
@@ -734,6 +754,15 @@ error_destroy_mutex:
 
 static void
 sc_screen_show_initial_window(struct sc_screen *screen) {
+    if (screen->embedded) {
+        if (screen->req.start_fps_counter) {
+            sc_fps_counter_start(&screen->fps_counter);
+        }
+        screen->window_shown = true;
+        sc_screen_update_content_rect(screen);
+        return;
+    }
+
     int x = screen->req.x != SC_WINDOW_POSITION_UNDEFINED
           ? screen->req.x : (int) SDL_WINDOWPOS_CENTERED;
     int y = screen->req.y != SC_WINDOW_POSITION_UNDEFINED
@@ -775,7 +804,9 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
 
 void
 sc_screen_hide_window(struct sc_screen *screen) {
-    sc_sdl_hide_window(screen->window);
+    if (!screen->embedded) {
+        sc_sdl_hide_window(screen->window);
+    }
     screen->window_shown = false;
 }
 
@@ -807,6 +838,12 @@ sc_screen_destroy(struct sc_screen *screen) {
     if (screen->disconnect_started) {
         sc_disconnect_destroy(&screen->disconnect);
     }
+#ifdef CONTINUOUS_RESIZING_WORKAROUND
+    if (screen->event_watcher_added) {
+        SDL_RemoveEventWatch(event_watcher, screen);
+        screen->event_watcher_added = false;
+    }
+#endif
     sc_texture_destroy(&screen->tex);
     av_frame_free(&screen->frame);
 #ifdef SC_DISPLAY_FORCE_OPENGL_CORE_PROFILE
@@ -819,8 +856,10 @@ sc_screen_destroy(struct sc_screen *screen) {
     sc_mutex_destroy(&screen->mutex);
 
     SDL_Event event;
-    bool has_event =
-        sc_dequeue_event(SC_EVENT_DISCONNECTED_ICON_LOADED, &event);
+    bool has_event = screen->embedded
+        ? sc_dequeue_event_for_tag(SC_EVENT_DISCONNECTED_ICON_LOADED,
+                                   screen->embedded_session, &event)
+        : sc_dequeue_event(SC_EVENT_DISCONNECTED_ICON_LOADED, &event);
     if (has_event) {
         assert(event.type == SC_EVENT_DISCONNECTED_ICON_LOADED);
         // The event was posted, but not handled, the icon must be freed
@@ -828,7 +867,10 @@ sc_screen_destroy(struct sc_screen *screen) {
         sc_icon_destroy(dangling_icon);
     }
 
-    has_event = sc_dequeue_event(SC_EVENT_OPEN_WINDOW, &event);
+    has_event = screen->embedded
+        ? sc_dequeue_event_for_tag(SC_EVENT_OPEN_WINDOW,
+                                   screen->embedded_session, &event)
+        : sc_dequeue_event(SC_EVENT_OPEN_WINDOW, &event);
     if (has_event) {
         assert(event.type == SC_EVENT_OPEN_WINDOW);
         // The event was posted, but not handled, the size must be freed
@@ -904,7 +946,7 @@ sc_screen_set_orientation(struct sc_screen *screen,
     struct sc_size new_content_size =
         get_oriented_size(screen->frame_size, orientation);
 
-    set_content_size(screen, new_content_size, true);
+    set_content_size(screen, new_content_size, !screen->embedded);
 
     screen->orientation = orientation;
     LOGI("Display orientation set to %s", sc_orientation_get_name(orientation));
@@ -998,7 +1040,7 @@ sc_screen_set_paused(struct sc_screen *screen, bool paused) {
         av_frame_free(&screen->frame);
         screen->frame = screen->resume_frame;
         screen->resume_frame = NULL;
-        bool ok = sc_screen_apply_frame(screen, true);
+        bool ok = sc_screen_apply_frame(screen, !screen->embedded);
         if (!ok) {
             LOGE("Resume frame update failed");
         }
@@ -1019,6 +1061,10 @@ void
 sc_screen_toggle_fullscreen(struct sc_screen *screen) {
     assert(screen->video);
 
+    if (screen->embedded) {
+        return;
+    }
+
     bool req_fullscreen =
         !(SDL_GetWindowFlags(screen->window) & SDL_WINDOW_FULLSCREEN);
 
@@ -1034,6 +1080,10 @@ sc_screen_toggle_fullscreen(struct sc_screen *screen) {
 void
 sc_screen_resize_to_fit(struct sc_screen *screen) {
     assert(screen->video);
+
+    if (screen->embedded) {
+        return;
+    }
 
     if (!is_windowed(screen)) {
         return;
@@ -1099,6 +1149,10 @@ void
 sc_screen_resize_to_pixel_perfect(struct sc_screen *screen) {
     assert(screen->video);
 
+    if (screen->embedded) {
+        return;
+    }
+
     if (!is_windowed(screen)) {
         return;
     }
@@ -1114,9 +1168,12 @@ static void
 sc_disconnect_on_icon_loaded(struct sc_disconnect *d, SDL_Surface *icon,
                              void *userdata) {
     (void) d;
-    (void) userdata;
+    struct sc_screen *screen = userdata;
 
-    bool ok = sc_push_event_with_data(SC_EVENT_DISCONNECTED_ICON_LOADED, icon);
+    bool ok = screen->embedded
+            ? sc_embedded_post_event(screen->embedded_session,
+                                     SC_EVENT_DISCONNECTED_ICON_LOADED, icon)
+            : sc_push_event_with_data(SC_EVENT_DISCONNECTED_ICON_LOADED, icon);
     if (!ok) {
         sc_icon_destroy(icon);
     }
@@ -1125,9 +1182,12 @@ sc_disconnect_on_icon_loaded(struct sc_disconnect *d, SDL_Surface *icon,
 static void
 sc_disconnect_on_timeout(struct sc_disconnect *d, void *userdata) {
     (void) d;
-    (void) userdata;
+    struct sc_screen *screen = userdata;
 
-    bool ok = sc_push_event(SC_EVENT_DISCONNECTED_TIMEOUT);
+    bool ok = screen->embedded
+            ? sc_embedded_post_event(screen->embedded_session,
+                                     SC_EVENT_DISCONNECTED_TIMEOUT, NULL)
+            : sc_push_event(SC_EVENT_DISCONNECTED_TIMEOUT);
     (void) ok; // ignore failure
 }
 
@@ -1161,6 +1221,31 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         }
         case SDL_EVENT_WINDOW_EXPOSED:
             sc_screen_render(screen, true);
+            return;
+        case SDL_EVENT_RENDER_TARGETS_RESET:
+            // The drawable contents were discarded, but textures are still
+            // valid. Present the retained frame again.
+            if (screen->window_shown) {
+                sc_screen_render(screen, true);
+            }
+            return;
+        case SDL_EVENT_RENDER_DEVICE_RESET:
+            // SDL requires textures to be recreated after a device reset.
+            // The most recently decoded AVFrame is retained specifically long
+            // enough to restore the renderer without restarting the stream.
+            if (screen->video && screen->window_shown
+                    && screen->frame->width && screen->frame->height) {
+                sc_texture_reset(&screen->tex);
+                if (sc_texture_set_from_frame(&screen->tex, screen->frame)) {
+                    sc_screen_render(screen, true);
+                } else {
+                    LOGE("Could not restore texture after renderer reset");
+                }
+            }
+            return;
+        case SDL_EVENT_RENDER_DEVICE_LOST:
+            // A subsequent SDL_EVENT_RENDER_DEVICE_RESET signals recovery.
+            LOGW("Renderer device lost, waiting for reset");
             return;
 // If defined, then the actions are already performed by the event watcher
 #ifndef CONTINUOUS_RESIZING_WORKAROUND
@@ -1206,7 +1291,8 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                 .on_timeout = sc_disconnect_on_timeout,
             };
             bool ok =
-                sc_disconnect_start(&screen->disconnect, deadline, &cbs, NULL);
+                sc_disconnect_start(&screen->disconnect, deadline, &cbs,
+                                    screen);
             if (ok) {
                 screen->disconnect_started = true;
             }

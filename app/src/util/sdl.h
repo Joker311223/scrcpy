@@ -11,7 +11,14 @@
 
 SDL_Window *
 sc_sdl_create_window(const char *title, int64_t x, int64_t y, int64_t width,
-                     int64_t height, int64_t flags);
+                     int64_t height, int64_t flags,
+                     void *embedded_nswindow, void *embedded_nsview);
+
+void
+sc_sdl_set_embedded_mode(bool enabled);
+
+bool
+sc_sdl_is_embedded(void);
 
 struct sc_size
 sc_sdl_get_window_size(SDL_Window *window);

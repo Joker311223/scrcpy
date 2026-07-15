@@ -5,9 +5,22 @@
 
 #include "util/log.h"
 
+static bool embedded_mode;
+
+void
+sc_sdl_set_embedded_mode(bool enabled) {
+    embedded_mode = enabled;
+}
+
+bool
+sc_sdl_is_embedded(void) {
+    return embedded_mode;
+}
+
 SDL_Window *
 sc_sdl_create_window(const char *title, int64_t x, int64_t y, int64_t width,
-                     int64_t height, int64_t flags) {
+                     int64_t height, int64_t flags,
+                     void *embedded_nswindow, void *embedded_nsview) {
     SDL_Window *window = NULL;
 
     SDL_PropertiesID props = SDL_CreateProperties();
@@ -24,8 +37,28 @@ sc_sdl_create_window(const char *title, int64_t x, int64_t y, int64_t width,
                                 width);
     ok &= SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER,
                                 height);
-    ok &= SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
-                                flags);
+    if (embedded_nswindow && embedded_nsview) {
+#ifdef __APPLE__
+        // SDL3 supports rendering directly into a host-provided NSView. Do not
+        // propagate HIDDEN or RESIZABLE: those flags belong to the containing
+        // SwiftUI window, not to the embedded render surface.
+        uint64_t embedded_flags = flags & SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        ok &= SDL_SetNumberProperty(props,
+                                    SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                                    embedded_flags);
+        ok &= SDL_SetPointerProperty(props,
+                                     SDL_PROP_WINDOW_CREATE_COCOA_WINDOW_POINTER,
+                                     embedded_nswindow);
+        ok &= SDL_SetPointerProperty(props,
+                                     SDL_PROP_WINDOW_CREATE_COCOA_VIEW_POINTER,
+                                     embedded_nsview);
+#else
+        ok = false;
+#endif
+    } else {
+        ok &= SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                                    flags);
+    }
 
     if (!ok) {
         SDL_DestroyProperties(props);

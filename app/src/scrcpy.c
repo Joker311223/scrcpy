@@ -18,6 +18,7 @@
 #include "controller.h"
 #include "decoder.h"
 #include "demuxer.h"
+#include "embedded.h"
 #include "events.h"
 #include "file_pusher.h"
 #include "keyboard_sdk.h"
@@ -49,6 +50,8 @@
 #include "video_regulator.h"
 
 struct scrcpy {
+    void *embedded_session;
+    const struct scrcpy_options *options;
     struct sc_server server;
     struct sc_screen screen;
     struct sc_audio_player audio_player;
@@ -115,6 +118,11 @@ sdl_configure_ctrl_c_windows(void) {
 
 static enum scrcpy_exit_code
 event_loop(struct scrcpy *s, bool has_screen) {
+    if (sc_embedded_is_enabled()) {
+        return sc_embedded_event_loop(s->embedded_session, &s->screen,
+                                      has_screen);
+    }
+
     SDL_Event event;
     while (SDL_WaitEvent(&event)) {
         switch (event.type) {
@@ -154,7 +162,11 @@ event_loop(struct scrcpy *s, bool has_screen) {
 
 // Return true on success, false on error
 static bool
-await_for_server(bool *connected) {
+await_for_server(struct scrcpy *s, bool *connected) {
+    if (sc_embedded_is_enabled()) {
+        return sc_embedded_await_for_server(s->embedded_session, connected);
+    }
+
     SDL_Event event;
     while (SDL_WaitEvent(&event)) {
         switch (event.type) {
@@ -179,14 +191,21 @@ await_for_server(bool *connected) {
     return false;
 }
 
+static bool
+push_scrcpy_event(struct scrcpy *s, uint32_t type) {
+    return s->embedded_session
+         ? sc_embedded_post_event(s->embedded_session, type, NULL)
+         : sc_push_event_impl(type, NULL, "scrcpy event");
+}
+
 static void
 sc_recorder_on_ended(struct sc_recorder *recorder, bool success,
                      void *userdata) {
     (void) recorder;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
     if (!success) {
-        sc_push_event(SC_EVENT_RECORDER_ERROR);
+        push_scrcpy_event(s, SC_EVENT_RECORDER_ERROR);
     }
 }
 
@@ -194,15 +213,15 @@ static void
 sc_video_demuxer_on_ended(struct sc_demuxer *demuxer,
                           enum sc_demuxer_status status, void *userdata) {
     (void) demuxer;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
     // The device may not decide to disable the video
     assert(status != SC_DEMUXER_STATUS_DISABLED);
 
     if (status == SC_DEMUXER_STATUS_EOS) {
-        sc_push_event(SC_EVENT_DEVICE_DISCONNECTED);
+        push_scrcpy_event(s, SC_EVENT_DEVICE_DISCONNECTED);
     } else {
-        sc_push_event(SC_EVENT_DEMUXER_ERROR);
+        push_scrcpy_event(s, SC_EVENT_DEMUXER_ERROR);
     }
 }
 
@@ -211,16 +230,17 @@ sc_audio_demuxer_on_ended(struct sc_demuxer *demuxer,
                           enum sc_demuxer_status status, void *userdata) {
     (void) demuxer;
 
-    const struct scrcpy_options *options = userdata;
+    struct scrcpy *s = userdata;
+    const struct scrcpy_options *options = s->options;
 
     // Contrary to the video demuxer, keep mirroring if only the audio fails
     // (unless --require-audio is set).
     if (status == SC_DEMUXER_STATUS_EOS) {
-        sc_push_event(SC_EVENT_DEVICE_DISCONNECTED);
+        push_scrcpy_event(s, SC_EVENT_DEVICE_DISCONNECTED);
     } else if (status == SC_DEMUXER_STATUS_ERROR
             || (status == SC_DEMUXER_STATUS_DISABLED
                 && options->require_audio)) {
-        sc_push_event(SC_EVENT_DEMUXER_ERROR);
+        push_scrcpy_event(s, SC_EVENT_DEMUXER_ERROR);
     }
 }
 
@@ -230,29 +250,29 @@ sc_controller_on_ended(struct sc_controller *controller, bool error,
     // Note: this function may be called twice, once from the controller thread
     // and once from the receiver thread
     (void) controller;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
     if (error) {
-        sc_push_event(SC_EVENT_CONTROLLER_ERROR);
+        push_scrcpy_event(s, SC_EVENT_CONTROLLER_ERROR);
     } else {
-        sc_push_event(SC_EVENT_DEVICE_DISCONNECTED);
+        push_scrcpy_event(s, SC_EVENT_DEVICE_DISCONNECTED);
     }
 }
 
 static void
 sc_server_on_connection_failed(struct sc_server *server, void *userdata) {
     (void) server;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
-    sc_push_event(SC_EVENT_SERVER_CONNECTION_FAILED);
+    push_scrcpy_event(s, SC_EVENT_SERVER_CONNECTION_FAILED);
 }
 
 static void
 sc_server_on_connected(struct sc_server *server, void *userdata) {
     (void) server;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
-    sc_push_event(SC_EVENT_SERVER_CONNECTED);
+    push_scrcpy_event(s, SC_EVENT_SERVER_CONNECTED);
 }
 
 static void
@@ -268,9 +288,9 @@ sc_server_on_disconnected(struct sc_server *server, void *userdata) {
 static void
 sc_timeout_on_timeout(struct sc_timeout *timeout, void *userdata) {
     (void) timeout;
-    (void) userdata;
+    struct scrcpy *s = userdata;
 
-    sc_push_event(SC_EVENT_TIME_LIMIT_REACHED);
+    push_scrcpy_event(s, SC_EVENT_TIME_LIMIT_REACHED);
 }
 
 // Generate a scrcpy id to differentiate multiple running scrcpy instances
@@ -319,20 +339,28 @@ set_terminal_title_with_prefix(const char *value) {
 
 enum scrcpy_exit_code
 scrcpy(struct scrcpy_options *options) {
-    static struct scrcpy scrcpy;
+    struct scrcpy *s = malloc(sizeof(*s));
+    if (!s) {
+        LOG_OOM();
+        return SCRCPY_EXIT_FAILURE;
+    }
 #ifndef NDEBUG
     // Detect missing initializations
-    memset(&scrcpy, 42, sizeof(scrcpy));
+    memset(s, 42, sizeof(*s));
 #endif
-    struct scrcpy *s = &scrcpy;
+    s->embedded_session = sc_embedded_current_session();
+    s->options = options;
 
     // Minimal SDL initialization
-    if (!SDL_Init(SDL_INIT_EVENTS)) {
+    if (!sc_embedded_is_enabled() && !SDL_Init(SDL_INIT_EVENTS)) {
         LOGE("Could not initialize SDL: %s", SDL_GetError());
+        free(s);
         return SCRCPY_EXIT_FAILURE;
     }
 
-    atexit(SDL_Quit);
+    if (!sc_embedded_is_enabled()) {
+        atexit(SDL_Quit);
+    }
 
     enum scrcpy_exit_code ret = SCRCPY_EXIT_FAILURE;
 
@@ -429,7 +457,8 @@ scrcpy(struct scrcpy_options *options) {
         .on_connected = sc_server_on_connected,
         .on_disconnected = sc_server_on_disconnected,
     };
-    if (!sc_server_init(&s->server, &params, &cbs, NULL)) {
+    if (!sc_server_init(&s->server, &params, &cbs, s)) {
+        free(s);
         return SCRCPY_EXIT_FAILURE;
     }
 
@@ -448,7 +477,7 @@ scrcpy(struct scrcpy_options *options) {
     server_started = true;
 
     if (options->list) {
-        bool ok = await_for_server(NULL);
+        bool ok = await_for_server(s, NULL);
         ret = ok ? SCRCPY_EXIT_SUCCESS : SCRCPY_EXIT_FAILURE;
         goto end;
     }
@@ -463,7 +492,7 @@ scrcpy(struct scrcpy_options *options) {
         // --no-video-playback is passed so that clipboard synchronization
         // still works.
         // <https://github.com/Genymobile/scrcpy/issues/4418>
-        if (!SDL_Init(SDL_INIT_VIDEO)) {
+        if (!sc_embedded_is_enabled() && !SDL_Init(SDL_INIT_VIDEO)) {
             // If it fails, it is an error only if video playback is enabled
             if (options->video_playback) {
                 LOGE("Could not initialize SDL video: %s", SDL_GetError());
@@ -475,14 +504,14 @@ scrcpy(struct scrcpy_options *options) {
     }
 
     if (options->audio_playback) {
-        if (!SDL_Init(SDL_INIT_AUDIO)) {
+        if (!sc_embedded_is_enabled() && !SDL_Init(SDL_INIT_AUDIO)) {
             LOGE("Could not initialize SDL audio: %s", SDL_GetError());
             goto end;
         }
     }
 
     if (options->gamepad_input_mode != SC_GAMEPAD_INPUT_MODE_DISABLED) {
-        if (!SDL_Init(SDL_INIT_GAMEPAD)) {
+        if (!sc_embedded_is_enabled() && !SDL_Init(SDL_INIT_GAMEPAD)) {
             LOGE("Could not initialize SDL gamepad: %s", SDL_GetError());
             goto end;
         }
@@ -490,7 +519,7 @@ scrcpy(struct scrcpy_options *options) {
 
     // Await for server without blocking Ctrl+C handling
     bool connected;
-    if (!await_for_server(&connected)) {
+    if (!await_for_server(s, &connected)) {
         LOGE("Server connection failed");
         goto end;
     }
@@ -534,7 +563,7 @@ scrcpy(struct scrcpy_options *options) {
             .on_ended = sc_video_demuxer_on_ended,
         };
         sc_demuxer_init(&s->video_demuxer, "video", s->server.video_socket,
-                        &video_demuxer_cbs, NULL);
+                        &video_demuxer_cbs, s);
     }
 
     if (options->audio) {
@@ -542,7 +571,7 @@ scrcpy(struct scrcpy_options *options) {
             .on_ended = sc_audio_demuxer_on_ended,
         };
         sc_demuxer_init(&s->audio_demuxer, "audio", s->server.audio_socket,
-                        &audio_demuxer_cbs, options);
+                        &audio_demuxer_cbs, s);
     }
 
     bool needs_video_decoder = options->video_playback;
@@ -568,7 +597,7 @@ scrcpy(struct scrcpy_options *options) {
         if (!sc_recorder_init(&s->recorder, options->record_filename,
                               options->record_format, options->video,
                               options->audio, options->record_orientation,
-                              &recorder_cbs, NULL)) {
+                              &recorder_cbs, s)) {
             goto end;
         }
         recorder_initialized = true;
@@ -599,7 +628,7 @@ scrcpy(struct scrcpy_options *options) {
         };
 
         if (!sc_controller_init(&s->controller, s->server.control_socket,
-            &controller_cbs, NULL)) {
+            &controller_cbs, s)) {
             goto end;
         }
         controller_initialized = true;
@@ -755,10 +784,18 @@ aoa_complete:
     assert(options->control == !!controller);
 
     if (options->window) {
+        void *embedded_nswindow = NULL;
+        void *embedded_nsview = NULL;
+        sc_embedded_get_host(s->embedded_session, &embedded_nswindow,
+                             &embedded_nsview);
         struct sc_screen_params screen_params = {
             .video = options->video_playback,
             .camera = options->video_source == SC_VIDEO_SOURCE_CAMERA,
+            .embedded = sc_embedded_is_enabled(),
             .flex_display = options->flex_display,
+            .embedded_session = s->embedded_session,
+            .embedded_nswindow = embedded_nswindow,
+            .embedded_nsview = embedded_nsview,
             .controller = controller,
             .fp = fp,
             .kp = kp,
@@ -784,10 +821,17 @@ aoa_complete:
             .start_fps_counter = options->start_fps_counter,
         };
 
-        if (!sc_screen_init(&s->screen, &screen_params)) {
+        bool screen_ok = sc_embedded_is_enabled()
+                       ? sc_embedded_screen_init(&s->screen, &screen_params)
+                       : sc_screen_init(&s->screen, &screen_params);
+        if (!screen_ok) {
             goto end;
         }
         screen_initialized = true;
+
+        if (sc_embedded_is_enabled()) {
+            sc_embedded_set_screen(s->embedded_session, &s->screen);
+        }
 
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;
@@ -871,7 +915,7 @@ aoa_complete:
             .on_timeout = sc_timeout_on_timeout,
         };
 
-        ok = sc_timeout_start(&s->timeout, deadline, &cbs, NULL);
+        ok = sc_timeout_start(&s->timeout, deadline, &cbs, s);
         if (!ok) {
             goto end;
         }
@@ -907,7 +951,9 @@ aoa_complete:
 
     // Reject all new runnables, and execute the pending ones now
     // (they could access memory that will be cleaned up below)
-    sc_main_thread_stop();
+    if (!s->embedded_session) {
+        sc_main_thread_stop();
+    }
 
     disconnected = ret == SCRCPY_EXIT_DISCONNECTED;
 
@@ -943,7 +989,7 @@ end:
     }
 
     if (screen_initialized) {
-        if (disconnected) {
+        if (disconnected && !sc_embedded_is_enabled()) {
             sc_screen_handle_disconnection(&s->screen);
         }
         LOGD("Quit...");
@@ -1004,7 +1050,12 @@ end:
     // destruction
     if (screen_initialized) {
         sc_screen_join(&s->screen);
-        sc_screen_destroy(&s->screen);
+        if (sc_embedded_is_enabled()) {
+            sc_embedded_set_screen(s->embedded_session, NULL);
+            sc_embedded_screen_destroy(&s->screen);
+        } else {
+            sc_screen_destroy(&s->screen);
+        }
     }
 
     if (controller_started) {
@@ -1032,5 +1083,6 @@ end:
 
     sc_server_destroy(&s->server);
 
+    free(s);
     return ret;
 }
