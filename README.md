@@ -1,9 +1,45 @@
+<p align="center">
+  <img src="docs/assets/app-icon.png" width="112" height="112" alt="Scrcpy Desk 图标">
+</p>
+
+<h1 align="center">Scrcpy Desk</h1>
+
+<p align="center">
+  一块面板，控制每一台 Android 设备。<br>
+  面向 macOS 的原生多设备控制台，直接内嵌 scrcpy 的实时画面与完整交互能力。
+</p>
+
+<p align="center">
+  <a href="https://joker311223.github.io/scrcpy/"><strong>官方网站</strong></a>
+  ·
+  <a href="desktop/macos/ScrcpyDesk/README.md">使用与构建说明</a>
+  ·
+  <a href="docs/">网站源码</a>
+  ·
+  <a href="https://github.com/Genymobile/scrcpy">上游 scrcpy</a>
+</p>
+
+![Scrcpy Desk 多设备控制台](docs/assets/product-dashboard.png)
+
+## 核心能力
+
+- **多设备同时展示与操作**：每台设备拥有独立 scrcpy 会话，通过横向滚动查看更多设备；
+- **原生内嵌交互**：鼠标、滚轮、键盘、输入法、剪贴板和音频都留在同一个 macOS 面板中；
+- **完整 ADB 设备管理**：支持 USB / Wi-Fi 发现、`adb connect` 与 Android 11+ 无线配对；
+- **设备级配置**：按序列号保存展示状态、备注名和页面跳链，并可一键发送 Android VIEW Intent；
+- **无需 Android 端安装应用**：沿用 scrcpy 的连接与控制方式，不会在设备上长期留下应用。
+
+> [!IMPORTANT]
+> Scrcpy Desk 是此 fork 基于 scrcpy 开发的 macOS 桌面产品，并非 Genymobile 发布的官方 scrcpy 客户端。下面保留上游项目的原始说明和安全提示。
+
+---
+
 > [!WARNING]
 > **This GitHub repo (<https://github.com/Genymobile/scrcpy>) is the only official
 source for the project. Do not download releases from random websites, even if
 their name contains `scrcpy`.**
 
-# scrcpy (v4.1)
+# 上游 scrcpy (v4.1)
 
 <img src="app/data/scrcpy.svg" width="128" height="128" alt="scrcpy" align="right" />
 
