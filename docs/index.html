@@ -230,6 +230,12 @@
             <div><span>架构</span><strong>Apple Silicon · arm64</strong></div>
             <div><span>文件</span><strong>11.3 MB · ZIP</strong></div>
           </div>
+          <div class="dependency-notice" role="note" aria-label="v0.4.0 运行依赖提示">
+            <div class="dependency-notice-title"><span>Beta 兼容性提示</span><strong>运行前需要安装依赖</strong></div>
+            <p>当前 v0.4.0 尚未将 SDL3 与 FFmpeg 动态库内置到 App。首次运行前，请先在终端执行：</p>
+            <pre><code><span aria-hidden="true">$</span> brew install ffmpeg sdl3</code></pre>
+            <small>如果缺少依赖，App 会在启动时退出，并可能出现 <code>Library not loaded: libSDL3.0.dylib</code>。</small>
+          </div>
           <a class="download-address" href="https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.0/Scrcpy-Desk-v0.4.0-macOS-arm64.zip" aria-label="下载 Scrcpy Desk 0.4.0 macOS arm64 安装包">
             <span>直接下载地址</span>
             <code>https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.0/Scrcpy-Desk-v0.4.0-macOS-arm64.zip</code>
@@ -258,6 +264,7 @@
           <div class="requirement-row"><span>系统</span><strong>macOS 13 或更高版本</strong></div>
           <div class="requirement-row"><span>设备</span><strong>已开启 Android 调试</strong></div>
           <div class="requirement-row"><span>连接</span><strong>USB / ADB over Wi‑Fi</strong></div>
+          <div class="requirement-row"><span>v0.4.0 依赖</span><strong>Homebrew · FFmpeg · SDL3</strong></div>
           <div class="requirement-row"><span>基础</span><strong>Powered by scrcpy</strong></div>
           <div class="terminal-card" aria-label="终端示例">
             <div><i></i><i></i><i></i></div>
@@ -274,6 +281,10 @@ connected to 192.0.2.21:8080
       <div class="container faq-layout">
         <div><p class="kicker">常见问题</p><h2>开始之前</h2></div>
         <div class="faq-list">
+          <details>
+            <summary>打开 App 后立即退出或提示 Library missing？<span>＋</span></summary>
+            <p>当前 v0.4.0 Beta 仍依赖 Homebrew 动态库。请先安装 Homebrew，再在终端执行 <code>brew install ffmpeg sdl3</code>。后续版本会改为内置依赖，避免要求使用者单独安装。</p>
+          </details>
           <details>
             <summary>会唤起独立的 scrcpy 窗口吗？<span>＋</span></summary>
             <p>不会。每台设备的 scrcpy 渲染与交互能力都直接嵌入 Scrcpy Desk 的设备卡片中。</p>
