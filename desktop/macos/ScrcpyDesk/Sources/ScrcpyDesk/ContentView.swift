@@ -99,9 +99,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Android 设备")
                         .font(.headline)
-                    Text(store.isPreconnecting
-                         ? "正在预连接设备…"
-                         : "\(store.devices.count) 台设备")
+                    Text("\(store.devices.count) 台设备")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

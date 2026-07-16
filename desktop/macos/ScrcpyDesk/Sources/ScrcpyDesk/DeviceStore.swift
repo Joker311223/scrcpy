@@ -8,7 +8,6 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var deviceDeepLinks: [String: String] = [:]
     @Published private(set) var launchingLinkSerials: Set<String> = []
     @Published private(set) var isRefreshing = false
-    @Published private(set) var isPreconnecting = false
     @Published var notice: String?
     @Published var errorMessage: String?
 
@@ -20,22 +19,6 @@ final class DeviceStore: ObservableObject {
     private let displayedSerialsKey = "displayedDeviceSerials"
     private let deviceRemarksKey = "deviceRemarks"
     private let deviceDeepLinksKey = "deviceDeepLinks"
-
-    private static let preconnectTargets = [
-        "33.231.115.146:8080",
-        "33.230.92.157:8080",
-        "33.230.95.176:8080",
-        "33.229.81.169:8080",
-        "33.230.86.150:8080",
-        "33.229.87.112:8080",
-        "33.229.94.19:8080",
-        "33.229.83.21:8080",
-        "33.230.88.25:8080",
-        "33.229.83.200:8080",
-        "33.229.94.76:8080",
-        "33.229.84.161:8080",
-        "33.229.94.89:8080",
-    ]
 
     init() {
         adbPath = ToolLocator.find("adb")
@@ -142,30 +125,12 @@ final class DeviceStore: ObservableObject {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
-        await preconnectConfiguredDevices()
         await refresh()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { break }
                 await self?.refresh()
-            }
-        }
-    }
-
-    private func preconnectConfiguredDevices() async {
-        guard let adbPath else { return }
-        isPreconnecting = true
-        defer { isPreconnecting = false }
-
-        let service = ADBService(executable: adbPath)
-        // Start the ADB daemon once before issuing concurrent connect calls.
-        _ = try? await service.devices()
-        await withTaskGroup(of: Void.self) { group in
-            for target in Self.preconnectTargets {
-                group.addTask {
-                    _ = try? await service.connect(host: target, port: "")
-                }
             }
         }
     }

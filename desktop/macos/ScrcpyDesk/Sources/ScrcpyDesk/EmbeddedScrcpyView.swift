@@ -398,17 +398,30 @@ final class ScrcpyHostView: NSView {
     var geometryDidChange: ((NSRect, NSRect) -> Void)?
     var sheetVisibilityDidChange: ((Bool) -> Void)?
     private var scrollObserver: NSObjectProtocol?
+    private var hierarchyFrameObserver: NSObjectProtocol?
     private var windowObservers: [NSObjectProtocol] = []
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         stopObservingScroll()
+        stopObservingHierarchyFrames()
         stopObservingWindow()
         guard window != nil else { return }
         observeScroll()
+        observeHierarchyFrames()
         observeWindow()
         didAttachToWindow?()
         notifyGeometryChange()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        stopObservingHierarchyFrames()
+        guard window != nil else { return }
+        observeHierarchyFrames()
+        DispatchQueue.main.async { [weak self] in
+            self?.notifyGeometryChange()
+        }
     }
 
     override func layout() {
@@ -418,6 +431,7 @@ final class ScrcpyHostView: NSView {
 
     deinit {
         stopObservingScroll()
+        stopObservingHierarchyFrames()
         stopObservingWindow()
     }
 
@@ -438,6 +452,43 @@ final class ScrcpyHostView: NSView {
             NotificationCenter.default.removeObserver(scrollObserver)
             self.scrollObserver = nil
         }
+    }
+
+    private func observeHierarchyFrames() {
+        var current: NSView? = self
+        while let view = current {
+            view.postsFrameChangedNotifications = true
+            current = view.superview
+        }
+
+        hierarchyFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let changedView = notification.object as? NSView,
+                  self.belongsToHierarchy(of: changedView) else { return }
+            self.notifyGeometryChange()
+        }
+    }
+
+    private func stopObservingHierarchyFrames() {
+        if let hierarchyFrameObserver {
+            NotificationCenter.default.removeObserver(hierarchyFrameObserver)
+            self.hierarchyFrameObserver = nil
+        }
+    }
+
+    private func belongsToHierarchy(of candidate: NSView) -> Bool {
+        var current: NSView? = self
+        while let view = current {
+            if view === candidate {
+                return true
+            }
+            current = view.superview
+        }
+        return false
     }
 
     private func observeWindow() {

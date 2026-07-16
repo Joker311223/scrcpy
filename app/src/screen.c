@@ -640,7 +640,10 @@ sc_screen_init(struct sc_screen *screen,
 
     SDL_Surface *icon = sc_icon_load(SC_ICON_FILENAME_SCRCPY);
     if (icon) {
-        if (!SDL_SetWindowIcon(screen->window, icon)) {
+        // In embedded mode, the host application owns the Dock/app-switcher
+        // icon. On macOS, setting an icon on an embedded SDL window may replace
+        // the icon configured by the SwiftUI host for the whole application.
+        if (!screen->embedded && !SDL_SetWindowIcon(screen->window, icon)) {
             LOGW("Could not set window icon: %s", SDL_GetError());
         }
 
