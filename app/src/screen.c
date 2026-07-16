@@ -632,10 +632,12 @@ sc_screen_init(struct sc_screen *screen,
         goto error_destroy_renderer;
     }
 
-    ok = SDL_StartTextInput(screen->window);
-    if (!ok) {
-        LOGE("Could not enable text input: %s", SDL_GetError());
-        goto error_destroy_texture;
+    if (!screen->embedded) {
+        ok = SDL_StartTextInput(screen->window);
+        if (!ok) {
+            LOGE("Could not enable text input: %s", SDL_GetError());
+            goto error_destroy_texture;
+        }
     }
 
     SDL_Surface *icon = sc_icon_load(SC_ICON_FILENAME_SCRCPY);

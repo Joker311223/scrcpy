@@ -20,17 +20,16 @@ enum EmbeddedSessionState: Equatable {
     }
 }
 
-final class ScrcpyRenderView: NSView, NSTextInputClient {
+final class ScrcpyRenderView: NSView {
     private static let registeredViews = NSHashTable<ScrcpyRenderView>.weakObjects()
     private static var sharedEventMonitor: Any?
+    private static weak var activeInputView: ScrcpyRenderView?
 
     var didAttachToWindow: (() -> Void)?
     var session: OpaquePointer?
     var visibleInteractionRect: NSRect = .zero
     private var trackingArea: NSTrackingArea?
     private var mouseButtons: UInt32 = 0
-    private var compositionText = NSAttributedString()
-    private var compositionSelection = NSRange(location: NSNotFound, length: 0)
     private var isDragging: Bool { mouseButtons != 0 }
 
     override var acceptsFirstResponder: Bool { true }
@@ -45,11 +44,17 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
             didAttachToWindow?()
         } else {
             Self.registeredViews.remove(self)
+            if Self.activeInputView === self {
+                Self.activeInputView = nil
+            }
         }
     }
 
     deinit {
         Self.registeredViews.remove(self)
+        if Self.activeInputView === self {
+            Self.activeInputView = nil
+        }
     }
 
     private func installEventMonitorIfNeeded() {
@@ -106,9 +111,9 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         case .rightMouseDragged where isInside || isDragging: rightMouseDragged(with: event)
         case .otherMouseDragged where isInside || isDragging: otherMouseDragged(with: event)
         case .scrollWheel where isInside: scrollWheel(with: event)
-        case .keyDown where window?.firstResponder === self: keyDown(with: event)
-        case .keyUp where window?.firstResponder === self: keyUp(with: event)
-        case .flagsChanged where window?.firstResponder === self: flagsChanged(with: event)
+        case .keyDown where Self.activeInputView === self: keyDown(with: event)
+        case .keyUp where Self.activeInputView === self: keyUp(with: event)
+        case .flagsChanged where Self.activeInputView === self: flagsChanged(with: event)
         default: return false
         }
         return true
@@ -129,7 +134,7 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
         sendMouseButton(event, button: 1, down: true)
     }
 
@@ -138,7 +143,7 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
         sendMouseButton(event, button: 3, down: true)
     }
 
@@ -147,7 +152,7 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
         sendMouseButton(event, button: event.buttonNumber == 2 ? 2 : 4, down: true)
     }
 
@@ -190,7 +195,7 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         if !modifiers.contains(.command),
            !modifiers.contains(.control),
            !modifiers.contains(.option) {
-            interpretKeyEvents([event])
+            sendPrintableText(event)
         }
     }
 
@@ -264,6 +269,23 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         sendNamedKey(name, down: down, repeatKey: event.isARepeat, flags: flags)
     }
 
+    private func sendPrintableText(_ event: NSEvent) {
+        // Navigation/editing keys are already forwarded as Android keycodes.
+        // Avoid passing AppKit private-use characters (for example arrows) as
+        // text while still injecting digits and punctuation in mixed mode.
+        switch event.keyCode {
+        case 36, 48, 49, 51, 53, 76, 115, 116, 117, 119, 121, 123, 124, 125, 126:
+            return
+        default:
+            break
+        }
+
+        guard let text = event.characters, !text.isEmpty, let session else {
+            return
+        }
+        text.withCString { _ = scrcpy_embedded_session_text(session, $0) }
+    }
+
     private func sendNamedKey(
         _ name: String,
         down: Bool,
@@ -307,75 +329,6 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
             return value
         }
     }
-
-    func insertText(_ string: Any, replacementRange: NSRange) {
-        let text: String
-        if let attributed = string as? NSAttributedString {
-            text = attributed.string
-        } else if let plain = string as? String {
-            text = plain
-        } else {
-            return
-        }
-        if !text.isEmpty {
-            guard let session else { return }
-            text.withCString { _ = scrcpy_embedded_session_text(session, $0) }
-        }
-        unmarkText()
-    }
-
-    override func doCommand(by selector: Selector) {
-        // Navigation and editing commands have already been forwarded from
-        // keyDown() as scrcpy SDK key events.
-    }
-
-    func setMarkedText(
-        _ string: Any,
-        selectedRange: NSRange,
-        replacementRange: NSRange
-    ) {
-        if let attributed = string as? NSAttributedString {
-            compositionText = attributed
-        } else if let plain = string as? String {
-            compositionText = NSAttributedString(string: plain)
-        }
-        compositionSelection = selectedRange
-    }
-
-    func unmarkText() {
-        compositionText = NSAttributedString()
-        compositionSelection = NSRange(location: NSNotFound, length: 0)
-    }
-
-    func selectedRange() -> NSRange { compositionSelection }
-
-    func markedRange() -> NSRange {
-        compositionText.length == 0
-            ? NSRange(location: NSNotFound, length: 0)
-            : NSRange(location: 0, length: compositionText.length)
-    }
-
-    func hasMarkedText() -> Bool { compositionText.length > 0 }
-
-    func attributedSubstring(
-        forProposedRange range: NSRange,
-        actualRange: NSRangePointer?
-    ) -> NSAttributedString? {
-        nil
-    }
-
-    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-
-    func firstRect(
-        forCharacterRange range: NSRange,
-        actualRange: NSRangePointer?
-    ) -> NSRect {
-        guard let window else { return .zero }
-        let local = NSRect(x: bounds.midX, y: bounds.minY, width: 1, height: 1)
-        return window.convertToScreen(convert(local, to: nil))
-    }
-
-    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 
     private func modifierKeyName(for keyCode: UInt16) -> String? {
         switch keyCode {
