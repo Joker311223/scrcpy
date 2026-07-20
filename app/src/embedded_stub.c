@@ -89,6 +89,13 @@ scrcpy_embedded_session_text(struct scrcpy_embedded_session *session,
     return false;
 }
 
+bool
+scrcpy_embedded_session_set_display_power(
+        struct scrcpy_embedded_session *session, bool on) {
+    (void) session; (void) on;
+    return false;
+}
+
 bool sc_embedded_is_enabled(void) { return false; }
 void *sc_embedded_current_session(void) { return NULL; }
 void sc_embedded_get_host(void *s, void **w, void **v) {
@@ -112,4 +119,5 @@ bool sc_embedded_screen_init(struct sc_screen *screen,
                              const struct sc_screen_params *params) {
     (void) screen; (void) params; return false;
 }
+void sc_embedded_screen_hide(struct sc_screen *screen) { (void) screen; }
 void sc_embedded_screen_destroy(struct sc_screen *screen) { (void) screen; }

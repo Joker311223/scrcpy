@@ -76,6 +76,10 @@ scrcpy_embedded_session_text(struct scrcpy_embedded_session *session,
                              const char *text);
 
 bool
+scrcpy_embedded_session_set_display_power(
+    struct scrcpy_embedded_session *session, bool on);
+
+bool
 sc_embedded_is_enabled(void);
 
 void *
@@ -100,6 +104,9 @@ sc_embedded_event_loop(void *session, struct sc_screen *screen,
 bool
 sc_embedded_screen_init(struct sc_screen *screen,
                         const struct sc_screen_params *params);
+
+void
+sc_embedded_screen_hide(struct sc_screen *screen);
 
 void
 sc_embedded_screen_destroy(struct sc_screen *screen);

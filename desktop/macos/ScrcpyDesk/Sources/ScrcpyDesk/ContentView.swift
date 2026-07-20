@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var store = DeviceStore()
@@ -99,9 +100,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Android 设备")
                         .font(.headline)
-                    Text(store.isPreconnecting
-                         ? "正在预连接设备…"
-                         : "\(store.devices.count) 台设备")
+                    Text("\(store.devices.count) 台设备")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -225,6 +224,9 @@ private struct DeviceRow: View {
 }
 
 private struct DeviceGalleryView: View {
+    private let minimumCardWidth: CGFloat = 240
+    private let maximumCardWidth: CGFloat = 640
+
     @ObservedObject var store: DeviceStore
 
     var body: some View {
@@ -252,15 +254,45 @@ private struct DeviceGalleryView: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 18) {
                         ForEach(store.displayedDevices) { device in
+                            let width = min(
+                                maximumCardWidth,
+                                max(
+                                    minimumCardWidth,
+                                    store.cardWidth(for: device, default: cardWidth)
+                                )
+                            )
                             DevicePreviewCard(
                                 device: device,
                                 store: store,
                                 remove: { store.removeFromDisplay(serial: device.serial) }
                             )
                             .frame(
-                                width: cardWidth,
+                                width: width,
                                 height: max(300, proxy.size.height - 40)
                             )
+                            .overlay(alignment: .trailing) {
+                                DeviceCardResizeHandle(
+                                    width: width,
+                                    defaultWidth: cardWidth,
+                                    minimumWidth: minimumCardWidth,
+                                    maximumWidth: maximumCardWidth,
+                                    update: {
+                                        store.setCardWidth(
+                                            $0,
+                                            for: device,
+                                            persist: false
+                                        )
+                                    },
+                                    finish: {
+                                        store.setCardWidth(
+                                            $0,
+                                            for: device,
+                                            persist: true
+                                        )
+                                    },
+                                    reset: { store.resetCardWidth(for: device) }
+                                )
+                            }
                         }
                     }
                     .padding(20)
@@ -281,6 +313,55 @@ private struct DeviceGalleryView: View {
             .padding(.horizontal, 18)
             .frame(height: 42)
         }
+    }
+}
+
+private struct DeviceCardResizeHandle: View {
+    let width: CGFloat
+    let defaultWidth: CGFloat
+    let minimumWidth: CGFloat
+    let maximumWidth: CGFloat
+    let update: (CGFloat) -> Void
+    let finish: (CGFloat) -> Void
+    let reset: () -> Void
+
+    @State private var dragStartWidth: CGFloat?
+    @State private var isHovering = false
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(isHovering ? 0.42 : 0.2))
+                .frame(width: isHovering ? 4 : 3, height: 48)
+        }
+        .frame(width: 14)
+        .contentShape(Rectangle())
+        .help("拖动调整设备宽度，双击恢复默认宽度")
+        .onHover { isHovering = $0 }
+        .onTapGesture(count: 2, perform: reset)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let start = dragStartWidth ?? width
+                    if dragStartWidth == nil {
+                        dragStartWidth = start
+                    }
+                    update(clamped(start + value.translation.width))
+                }
+                .onEnded { value in
+                    let start = dragStartWidth ?? width
+                    let finalWidth = clamped(start + value.translation.width)
+                    dragStartWidth = nil
+                    finish(finalWidth)
+                }
+        )
+        .accessibilityLabel("调整设备视图宽度")
+        .accessibilityValue("当前宽度 \(Int(width))")
+    }
+
+    private func clamped(_ proposedWidth: CGFloat) -> CGFloat {
+        min(maximumWidth, max(minimumWidth, proposedWidth))
     }
 }
 
@@ -317,10 +398,13 @@ private final class ScrollerConfiguratorView: NSView {
 }
 
 private struct DevicePreviewCard: View {
+    private static let apkContentType = UTType(filenameExtension: "apk") ?? .data
+
     let device: AndroidDevice
     @ObservedObject var store: DeviceStore
     let remove: () -> Void
     @State private var sessionState: EmbeddedSessionState = .idle
+    @State private var isChoosingAPK = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -334,6 +418,33 @@ private struct DevicePreviewCard: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                let installState = store.apkInstallState(for: device)
+                if installState == .installing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 18, height: 18)
+                        .help("正在安装 APK")
+                } else {
+                    Button {
+                        isChoosingAPK = true
+                    } label: {
+                        Image(
+                            systemName: installState == .succeeded
+                                ? "checkmark.circle.fill"
+                                : installState == .failed
+                                    ? "exclamationmark.circle.fill"
+                                    : "square.and.arrow.down"
+                        )
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(
+                        installState == .succeeded
+                            ? Color.green
+                            : installState == .failed ? Color.red : Color.accentColor
+                    )
+                    .disabled(!device.isReady || store.adbPath == nil)
+                    .help("选择 APK 并安装到此设备")
+                }
                 let deepLink = store.deepLink(for: device)
                 if store.isLaunchingLink(on: device) {
                     ProgressView()
@@ -414,8 +525,33 @@ private struct DevicePreviewCard: View {
                 .stroke(Color.primary.opacity(0.1), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+        .fileImporter(
+            isPresented: $isChoosingAPK,
+            allowedContentTypes: [Self.apkContentType],
+            allowsMultipleSelection: false
+        ) { result in
+            handleAPKSelection(result)
+        }
     }
 
+    private func handleAPKSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let apkURL = urls.first else { return }
+            let hasSecurityAccess = apkURL.startAccessingSecurityScopedResource()
+            Task {
+                await store.installAPK(apkURL, on: device)
+                if hasSecurityAccess {
+                    apkURL.stopAccessingSecurityScopedResource()
+                }
+            }
+        case .failure(let error):
+            let cocoaError = error as NSError
+            if cocoaError.domain != NSCocoaErrorDomain || cocoaError.code != NSUserCancelledError {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
 }
 
 private struct ConfigureDeepLinkView: View {

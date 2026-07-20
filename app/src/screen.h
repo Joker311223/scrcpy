@@ -194,6 +194,11 @@ void
 sc_screen_set_orientation(struct sc_screen *screen,
                           enum sc_orientation orientation);
 
+// Present the retained frame and rebuild its texture once if the renderer
+// reports a failure. Used by long-lived embedded surfaces after occlusion.
+bool
+sc_screen_refresh(struct sc_screen *screen);
+
 // set the display pause state
 void
 sc_screen_set_paused(struct sc_screen *screen, bool paused);

@@ -1,14 +1,21 @@
 import Foundation
 
+enum APKInstallState: Equatable {
+    case installing
+    case succeeded
+    case failed
+}
+
 @MainActor
 final class DeviceStore: ObservableObject {
     @Published private(set) var devices: [AndroidDevice] = []
     @Published private(set) var displayedSerials: [String] = []
     @Published private(set) var deviceRemarks: [String: String] = [:]
     @Published private(set) var deviceDeepLinks: [String: String] = [:]
+    @Published private(set) var deviceCardWidths: [String: Double] = [:]
     @Published private(set) var launchingLinkSerials: Set<String> = []
+    @Published private(set) var apkInstallStates: [String: APKInstallState] = [:]
     @Published private(set) var isRefreshing = false
-    @Published private(set) var isPreconnecting = false
     @Published var notice: String?
     @Published var errorMessage: String?
 
@@ -20,22 +27,7 @@ final class DeviceStore: ObservableObject {
     private let displayedSerialsKey = "displayedDeviceSerials"
     private let deviceRemarksKey = "deviceRemarks"
     private let deviceDeepLinksKey = "deviceDeepLinks"
-
-    private static let preconnectTargets = [
-        "33.231.115.146:8080",
-        "33.230.92.157:8080",
-        "33.230.95.176:8080",
-        "33.229.81.169:8080",
-        "33.230.86.150:8080",
-        "33.229.87.112:8080",
-        "33.229.94.19:8080",
-        "33.229.83.21:8080",
-        "33.230.88.25:8080",
-        "33.229.83.200:8080",
-        "33.229.94.76:8080",
-        "33.229.84.161:8080",
-        "33.229.94.89:8080",
-    ]
+    private let deviceCardWidthsKey = "deviceCardWidths"
 
     init() {
         adbPath = ToolLocator.find("adb")
@@ -49,6 +41,9 @@ final class DeviceStore: ObservableObject {
         deviceDeepLinks = UserDefaults.standard.dictionary(
             forKey: deviceDeepLinksKey
         ) as? [String: String] ?? [:]
+        deviceCardWidths = UserDefaults.standard.dictionary(
+            forKey: deviceCardWidthsKey
+        ) as? [String: Double] ?? [:]
     }
 
     var displayedDevices: [AndroidDevice] {
@@ -107,8 +102,56 @@ final class DeviceStore: ObservableObject {
         UserDefaults.standard.set(deviceDeepLinks, forKey: deviceDeepLinksKey)
     }
 
+    func cardWidth(for device: AndroidDevice, default defaultWidth: CGFloat) -> CGFloat {
+        deviceCardWidths[device.serial].map { CGFloat($0) } ?? defaultWidth
+    }
+
+    func setCardWidth(_ width: CGFloat, for device: AndroidDevice, persist: Bool) {
+        deviceCardWidths[device.serial] = Double(width)
+        if persist {
+            UserDefaults.standard.set(deviceCardWidths, forKey: deviceCardWidthsKey)
+        }
+    }
+
+    func resetCardWidth(for device: AndroidDevice) {
+        deviceCardWidths.removeValue(forKey: device.serial)
+        UserDefaults.standard.set(deviceCardWidths, forKey: deviceCardWidthsKey)
+    }
+
     func isLaunchingLink(on device: AndroidDevice) -> Bool {
         launchingLinkSerials.contains(device.serial)
+    }
+
+    func apkInstallState(for device: AndroidDevice) -> APKInstallState? {
+        apkInstallStates[device.serial]
+    }
+
+    func installAPK(_ apkURL: URL, on device: AndroidDevice) async {
+        guard let adbPath else {
+            errorMessage = environmentMessage
+            return
+        }
+        guard apkURL.pathExtension.localizedCaseInsensitiveCompare("apk") == .orderedSame else {
+            errorMessage = "请选择扩展名为 .apk 的 Android 安装包"
+            return
+        }
+        guard apkInstallStates[device.serial] != .installing else { return }
+
+        notice = nil
+        errorMessage = nil
+        apkInstallStates[device.serial] = .installing
+        do {
+            try await ADBService(executable: adbPath).installAPK(
+                serial: device.serial,
+                apkURL: apkURL
+            )
+            apkInstallStates[device.serial] = .succeeded
+            errorMessage = nil
+            notice = "\(apkURL.lastPathComponent) 已成功安装到 \(displayName(for: device))"
+        } catch {
+            apkInstallStates[device.serial] = .failed
+            errorMessage = error.localizedDescription
+        }
     }
 
     func openConfiguredLink(on device: AndroidDevice) async {
@@ -142,30 +185,12 @@ final class DeviceStore: ObservableObject {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
-        await preconnectConfiguredDevices()
         await refresh()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { break }
                 await self?.refresh()
-            }
-        }
-    }
-
-    private func preconnectConfiguredDevices() async {
-        guard let adbPath else { return }
-        isPreconnecting = true
-        defer { isPreconnecting = false }
-
-        let service = ADBService(executable: adbPath)
-        // Start the ADB daemon once before issuing concurrent connect calls.
-        _ = try? await service.devices()
-        await withTaskGroup(of: Void.self) { group in
-            for target in Self.preconnectTargets {
-                group.addTask {
-                    _ = try? await service.connect(host: target, port: "")
-                }
             }
         }
     }

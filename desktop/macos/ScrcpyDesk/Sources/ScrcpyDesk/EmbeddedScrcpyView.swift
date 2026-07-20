@@ -20,17 +20,16 @@ enum EmbeddedSessionState: Equatable {
     }
 }
 
-final class ScrcpyRenderView: NSView, NSTextInputClient {
+final class ScrcpyRenderView: NSView {
     private static let registeredViews = NSHashTable<ScrcpyRenderView>.weakObjects()
     private static var sharedEventMonitor: Any?
+    private static weak var activeInputView: ScrcpyRenderView?
 
     var didAttachToWindow: (() -> Void)?
     var session: OpaquePointer?
     var visibleInteractionRect: NSRect = .zero
     private var trackingArea: NSTrackingArea?
     private var mouseButtons: UInt32 = 0
-    private var compositionText = NSAttributedString()
-    private var compositionSelection = NSRange(location: NSNotFound, length: 0)
     private var isDragging: Bool { mouseButtons != 0 }
 
     override var acceptsFirstResponder: Bool { true }
@@ -45,11 +44,17 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
             didAttachToWindow?()
         } else {
             Self.registeredViews.remove(self)
+            if Self.activeInputView === self {
+                Self.activeInputView = nil
+            }
         }
     }
 
     deinit {
         Self.registeredViews.remove(self)
+        if Self.activeInputView === self {
+            Self.activeInputView = nil
+        }
     }
 
     private func installEventMonitorIfNeeded() {
@@ -106,9 +111,9 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         case .rightMouseDragged where isInside || isDragging: rightMouseDragged(with: event)
         case .otherMouseDragged where isInside || isDragging: otherMouseDragged(with: event)
         case .scrollWheel where isInside: scrollWheel(with: event)
-        case .keyDown where window?.firstResponder === self: keyDown(with: event)
-        case .keyUp where window?.firstResponder === self: keyUp(with: event)
-        case .flagsChanged where window?.firstResponder === self: flagsChanged(with: event)
+        case .keyDown where Self.activeInputView === self: keyDown(with: event)
+        case .keyUp where Self.activeInputView === self: keyUp(with: event)
+        case .flagsChanged where Self.activeInputView === self: flagsChanged(with: event)
         default: return false
         }
         return true
@@ -129,7 +134,8 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
+        wakeDisplay()
         sendMouseButton(event, button: 1, down: true)
     }
 
@@ -138,7 +144,8 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
+        wakeDisplay()
         sendMouseButton(event, button: 3, down: true)
     }
 
@@ -147,7 +154,8 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        Self.activeInputView = self
+        wakeDisplay()
         sendMouseButton(event, button: event.buttonNumber == 2 ? 2 : 4, down: true)
     }
 
@@ -190,7 +198,7 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         if !modifiers.contains(.command),
            !modifiers.contains(.control),
            !modifiers.contains(.option) {
-            interpretKeyEvents([event])
+            sendPrintableText(event)
         }
     }
 
@@ -264,6 +272,28 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         sendNamedKey(name, down: down, repeatKey: event.isARepeat, flags: flags)
     }
 
+    private func sendPrintableText(_ event: NSEvent) {
+        // Navigation/editing keys are already forwarded as Android keycodes.
+        // Avoid passing AppKit private-use characters (for example arrows) as
+        // text while still injecting digits and punctuation in mixed mode.
+        switch event.keyCode {
+        case 36, 48, 49, 51, 53, 76, 115, 116, 117, 119, 121, 123, 124, 125, 126:
+            return
+        default:
+            break
+        }
+
+        guard let text = event.characters, !text.isEmpty, let session else {
+            return
+        }
+        text.withCString { _ = scrcpy_embedded_session_text(session, $0) }
+    }
+
+    private func wakeDisplay() {
+        guard let session else { return }
+        _ = scrcpy_embedded_session_set_display_power(session, true)
+    }
+
     private func sendNamedKey(
         _ name: String,
         down: Bool,
@@ -308,75 +338,6 @@ final class ScrcpyRenderView: NSView, NSTextInputClient {
         }
     }
 
-    func insertText(_ string: Any, replacementRange: NSRange) {
-        let text: String
-        if let attributed = string as? NSAttributedString {
-            text = attributed.string
-        } else if let plain = string as? String {
-            text = plain
-        } else {
-            return
-        }
-        if !text.isEmpty {
-            guard let session else { return }
-            text.withCString { _ = scrcpy_embedded_session_text(session, $0) }
-        }
-        unmarkText()
-    }
-
-    override func doCommand(by selector: Selector) {
-        // Navigation and editing commands have already been forwarded from
-        // keyDown() as scrcpy SDK key events.
-    }
-
-    func setMarkedText(
-        _ string: Any,
-        selectedRange: NSRange,
-        replacementRange: NSRange
-    ) {
-        if let attributed = string as? NSAttributedString {
-            compositionText = attributed
-        } else if let plain = string as? String {
-            compositionText = NSAttributedString(string: plain)
-        }
-        compositionSelection = selectedRange
-    }
-
-    func unmarkText() {
-        compositionText = NSAttributedString()
-        compositionSelection = NSRange(location: NSNotFound, length: 0)
-    }
-
-    func selectedRange() -> NSRange { compositionSelection }
-
-    func markedRange() -> NSRange {
-        compositionText.length == 0
-            ? NSRange(location: NSNotFound, length: 0)
-            : NSRange(location: 0, length: compositionText.length)
-    }
-
-    func hasMarkedText() -> Bool { compositionText.length > 0 }
-
-    func attributedSubstring(
-        forProposedRange range: NSRange,
-        actualRange: NSRangePointer?
-    ) -> NSAttributedString? {
-        nil
-    }
-
-    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-
-    func firstRect(
-        forCharacterRange range: NSRange,
-        actualRange: NSRangePointer?
-    ) -> NSRect {
-        guard let window else { return .zero }
-        let local = NSRect(x: bounds.midX, y: bounds.minY, width: 1, height: 1)
-        return window.convertToScreen(convert(local, to: nil))
-    }
-
-    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
-
     private func modifierKeyName(for keyCode: UInt16) -> String? {
         switch keyCode {
         case 54: return "Right GUI"
@@ -398,17 +359,30 @@ final class ScrcpyHostView: NSView {
     var geometryDidChange: ((NSRect, NSRect) -> Void)?
     var sheetVisibilityDidChange: ((Bool) -> Void)?
     private var scrollObserver: NSObjectProtocol?
+    private var hierarchyFrameObserver: NSObjectProtocol?
     private var windowObservers: [NSObjectProtocol] = []
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         stopObservingScroll()
+        stopObservingHierarchyFrames()
         stopObservingWindow()
         guard window != nil else { return }
         observeScroll()
+        observeHierarchyFrames()
         observeWindow()
         didAttachToWindow?()
         notifyGeometryChange()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        stopObservingHierarchyFrames()
+        guard window != nil else { return }
+        observeHierarchyFrames()
+        DispatchQueue.main.async { [weak self] in
+            self?.notifyGeometryChange()
+        }
     }
 
     override func layout() {
@@ -418,6 +392,7 @@ final class ScrcpyHostView: NSView {
 
     deinit {
         stopObservingScroll()
+        stopObservingHierarchyFrames()
         stopObservingWindow()
     }
 
@@ -438,6 +413,43 @@ final class ScrcpyHostView: NSView {
             NotificationCenter.default.removeObserver(scrollObserver)
             self.scrollObserver = nil
         }
+    }
+
+    private func observeHierarchyFrames() {
+        var current: NSView? = self
+        while let view = current {
+            view.postsFrameChangedNotifications = true
+            current = view.superview
+        }
+
+        hierarchyFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let changedView = notification.object as? NSView,
+                  self.belongsToHierarchy(of: changedView) else { return }
+            self.notifyGeometryChange()
+        }
+    }
+
+    private func stopObservingHierarchyFrames() {
+        if let hierarchyFrameObserver {
+            NotificationCenter.default.removeObserver(hierarchyFrameObserver)
+            self.hierarchyFrameObserver = nil
+        }
+    }
+
+    private func belongsToHierarchy(of candidate: NSView) -> Bool {
+        var current: NSView? = self
+        while let view = current {
+            if view === candidate {
+                return true
+            }
+            current = view.superview
+        }
+        return false
     }
 
     private func observeWindow() {
@@ -469,7 +481,16 @@ final class ScrcpyHostView: NSView {
     }
 
     fileprivate func notifyGeometryChange() {
-        guard let window, !bounds.isEmpty else { return }
+        guard let window,
+              window.isVisible,
+              !window.isMiniaturized,
+              !bounds.isEmpty,
+              !isHiddenInHierarchy else {
+            // The SDL surface lives in a child NSWindow, so it does not
+            // automatically disappear when SwiftUI removes or hides its host.
+            geometryDidChange?(.zero, .zero)
+            return
+        }
         let fullInWindow = convert(bounds, to: nil)
         var visibleInWindow = fullInWindow
 
@@ -488,10 +509,21 @@ final class ScrcpyHostView: NSView {
             let reportedVisible = convert(visibleRect.intersection(bounds), to: nil)
             visibleInWindow = visibleInWindow.intersection(reportedVisible)
         }
-        geometryDidChange?(
-            window.convertToScreen(fullInWindow),
-            window.convertToScreen(visibleInWindow)
-        )
+        let visibleOnScreen = visibleInWindow.isNull
+            ? NSRect.null
+            : window.convertToScreen(visibleInWindow)
+        geometryDidChange?(window.convertToScreen(fullInWindow), visibleOnScreen)
+    }
+
+    private var isHiddenInHierarchy: Bool {
+        var current: NSView? = self
+        while let view = current {
+            if view.isHidden {
+                return true
+            }
+            current = view.superview
+        }
+        return false
     }
 }
 
@@ -568,13 +600,21 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
         private var requestedSerial: String?
         private var activeSerial: String?
         private var attemptedSerial: String?
+        private weak var hostView: ScrcpyHostView?
         private weak var hostWindow: NSWindow?
-        private var renderWindow: NSWindow?
+        private weak var orderedBelowSheet: NSWindow?
+        private var renderWindow: EmbeddedRenderWindow?
         private var renderContainer: NSView?
         private var renderView: ScrcpyRenderView?
         private var session: OpaquePointer?
-        private var renderSuspendedForSheet = false
+        private var lastAppliedFullRect: NSRect?
+        private var lastAppliedLocalClip: NSRect?
         private var lastRefreshTime: TimeInterval = 0
+        private var displayPowerRequested = false
+        private var reconnectAttempt = 0
+        private var retryNotBefore: TimeInterval = 0
+        private var consecutiveRenderFailures = 0
+        private var renderRecoveryRequested = false
 
         init(state: Binding<EmbeddedSessionState>) {
             stateBinding = state
@@ -584,6 +624,10 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             guard requestedSerial != serial else { return }
             requestedSerial = serial
             attemptedSerial = nil
+            reconnectAttempt = 0
+            retryNotBefore = 0
+            consecutiveRenderFailures = 0
+            renderRecoveryRequested = false
 
             if activeSerial != nil {
                 if let session {
@@ -627,6 +671,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             window.addChildWindow(child, ordered: .above)
 
             hostWindow = window
+            hostView = view
             renderWindow = child
             renderContainer = container
             renderView = surface
@@ -634,8 +679,15 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
                 self?.updateRenderGeometry(full: full, visible: visible)
             }
             view.sheetVisibilityDidChange = { [weak self, weak view] isVisible in
-                self?.setRenderSuspendedForSheet(isVisible)
-                if !isVisible {
+                self?.updateRenderOrderingForSheet(isVisible)
+                if isVisible {
+                    // willBeginSheet is sent just before AppKit exposes
+                    // attachedSheet. Reorder on the next main-loop turn so
+                    // the video remains visible behind, never over, the sheet.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updateRenderOrderingForSheet(true)
+                    }
+                } else {
                     view?.notifyGeometryChange()
                 }
             }
@@ -663,6 +715,8 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
                 renderWindow = nil
                 renderContainer = nil
                 renderView = nil
+                hostView = nil
+                hostWindow = nil
                 stateBinding.wrappedValue = .failed
                 return
             }
@@ -670,11 +724,17 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             session = created
             surface.session = created
             initialized = true
-            timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            let pumpTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.pump()
                 }
             }
+            // The default run-loop mode pauses timers while a horizontal
+            // scroller or resize handle is being dragged. Pumping in common
+            // modes keeps video, input, and the geometry watchdog alive for
+            // the whole interaction.
+            RunLoop.main.add(pumpTimer, forMode: .common)
+            timer = pumpTimer
             view.notifyGeometryChange()
             DispatchQueue.main.async { [weak view] in
                 // Re-evaluate after SwiftUI/NSScrollView finishes positioning
@@ -686,7 +746,9 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
 
         private func updateRenderGeometry(full: NSRect, visible: NSRect) {
             guard let renderWindow, let renderContainer, let renderView else { return }
-            guard !renderSuspendedForSheet, hostWindow?.attachedSheet == nil else {
+            guard let hostWindow,
+                  hostWindow.isVisible,
+                  !hostWindow.isMiniaturized else {
                 renderView.visibleInteractionRect = .zero
                 renderWindow.orderOut(nil)
                 return
@@ -698,50 +760,85 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
                 return
             }
 
-            // Keep the Cocoa/SDL window at its full size. Resizing it to the
-            // visible intersection makes SDL letterbox into that narrower
-            // size and visibly stretches the Android frame while scrolling.
-            renderWindow.setFrame(full, display: true)
-            renderContainer.frame = NSRect(origin: .zero, size: full.size)
-            renderView.frame = renderContainer.bounds
-
             let localClip = NSRect(
                 x: clipped.minX - full.minX,
                 y: clipped.minY - full.minY,
                 width: clipped.width,
                 height: clipped.height
             )
-            renderView.visibleInteractionRect = localClip
+            let geometryChanged = !Self.rect(renderWindow.frame, matches: full)
+                || !Self.rect(lastAppliedFullRect, matches: full)
+                || !Self.rect(lastAppliedLocalClip, matches: localClip)
+                || !Self.rect(renderView.visibleInteractionRect, matches: localClip)
 
-            let mask = CAShapeLayer()
-            mask.frame = renderContainer.bounds
-            mask.path = CGPath(rect: localClip, transform: nil)
-            mask.fillColor = NSColor.black.cgColor
-            renderContainer.layer?.mask = mask
-            renderContainer.layer?.setNeedsDisplay()
+            // Keep the Cocoa/SDL window at its full size. Resizing it to the
+            // visible intersection makes SDL letterbox into that narrower
+            // size and visibly stretches the Android frame while scrolling.
+            if geometryChanged {
+                renderWindow.setFrame(full, display: true)
+                renderContainer.frame = NSRect(origin: .zero, size: full.size)
+                renderView.frame = renderContainer.bounds
+                renderView.visibleInteractionRect = localClip
 
-            // SDL may install its Metal layer directly on the render NSView.
-            // Apply the same mask there as well instead of relying only on
-            // ancestor-layer clipping across a child NSWindow boundary.
-            let surfaceMask = CAShapeLayer()
-            surfaceMask.frame = renderView.bounds
-            surfaceMask.path = CGPath(rect: localClip, transform: nil)
-            surfaceMask.fillColor = NSColor.black.cgColor
-            renderView.layer?.mask = surfaceMask
+                let mask = CAShapeLayer()
+                mask.frame = renderContainer.bounds
+                mask.path = CGPath(rect: localClip, transform: nil)
+                mask.fillColor = NSColor.black.cgColor
+                renderContainer.layer?.mask = mask
+                renderContainer.layer?.setNeedsDisplay()
+
+                // SDL may install its Metal layer directly on the render
+                // NSView. Apply the same mask there as well instead of relying
+                // only on ancestor clipping across a child-window boundary.
+                let surfaceMask = CAShapeLayer()
+                surfaceMask.frame = renderView.bounds
+                surfaceMask.path = CGPath(rect: localClip, transform: nil)
+                surfaceMask.fillColor = NSColor.black.cgColor
+                renderView.layer?.mask = surfaceMask
+
+                lastAppliedFullRect = full
+                lastAppliedLocalClip = localClip
+            }
+
             let becameVisible = !renderWindow.isVisible
-            if becameVisible {
+            if renderWindow.parent == nil {
+                hostWindow.addChildWindow(renderWindow, ordered: .above)
+            }
+            if let sheet = hostWindow.attachedSheet {
+                // Do not hide the renderer for sheets or alerts: retaining the
+                // child window preserves both the last frame and the Metal
+                // drawable. Keep it immediately below the modal instead.
+                if orderedBelowSheet !== sheet || becameVisible {
+                    renderWindow.order(.below, relativeTo: sheet.windowNumber)
+                    orderedBelowSheet = sheet
+                }
+            } else if becameVisible {
+                orderedBelowSheet = nil
                 renderWindow.orderFront(nil)
             }
-            if becameVisible {
+            if becameVisible || geometryChanged {
                 refreshRenderSurface()
             }
         }
 
-        private func setRenderSuspendedForSheet(_ suspended: Bool) {
-            renderSuspendedForSheet = suspended
-            if suspended {
-                renderView?.visibleInteractionRect = .zero
-                renderWindow?.orderOut(nil)
+        private static func rect(_ lhs: NSRect?, matches rhs: NSRect) -> Bool {
+            guard let lhs else { return false }
+            let tolerance: CGFloat = 0.25
+            return abs(lhs.origin.x - rhs.origin.x) <= tolerance
+                && abs(lhs.origin.y - rhs.origin.y) <= tolerance
+                && abs(lhs.size.width - rhs.size.width) <= tolerance
+                && abs(lhs.size.height - rhs.size.height) <= tolerance
+        }
+
+        private func updateRenderOrderingForSheet(_ isVisible: Bool) {
+            guard let hostWindow, let renderWindow else { return }
+            if isVisible, let sheet = hostWindow.attachedSheet {
+                renderWindow.order(.below, relativeTo: sheet.windowNumber)
+                orderedBelowSheet = sheet
+            } else if !isVisible {
+                orderedBelowSheet = nil
+                renderWindow.orderFront(nil)
+                refreshRenderSurface()
             }
         }
 
@@ -759,8 +856,14 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             session = nil
             activeSerial = nil
             attemptedSerial = nil
-            renderSuspendedForSheet = false
+            lastAppliedFullRect = nil
+            lastAppliedLocalClip = nil
             lastRefreshTime = 0
+            displayPowerRequested = false
+            reconnectAttempt = 0
+            retryNotBefore = 0
+            consecutiveRenderFailures = 0
+            renderRecoveryRequested = false
             renderView?.session = nil
             renderView?.visibleInteractionRect = .zero
             if let renderWindow {
@@ -779,7 +882,9 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             renderWindow = nil
             renderContainer = nil
             renderView = nil
+            hostView = nil
             hostWindow = nil
+            orderedBelowSheet = nil
 
             // Joining the scrcpy worker on the main thread prevents SwiftUI
             // from completing the ForEach deletion and leaves a black card on
@@ -793,32 +898,90 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
         }
 
         private func pump() {
+            // SwiftUI may re-layout a sibling card without posting an AppKit
+            // frame notification for this host. Sampling the authoritative
+            // host geometry on every display pump prevents the independent
+            // SDL child window from being stranded at its former position.
+            hostView?.notifyGeometryChange()
+
             guard let session else { return }
             let rawStatus = scrcpy_embedded_session_pump(session)
             let newState = Self.map(rawStatus)
             stateBinding.wrappedValue = newState
 
+            let now = ProcessInfo.processInfo.systemUptime
+
+            // Some vendor ROMs report the device as awake while the physical
+            // display is actually OFF. Explicitly request display power once
+            // after the controller becomes available instead of relying only
+            // on scrcpy's startup wakefulness check.
+            if newState == .running, !displayPowerRequested {
+                displayPowerRequested = scrcpy_embedded_session_set_display_power(
+                    session,
+                    true
+                )
+            }
+
+            if newState == .running {
+                // A successful connection resets the exponential backoff so a
+                // later transient ADB/network failure recovers promptly.
+                reconnectAttempt = 0
+                retryNotBefore = 0
+            }
+
             // A host-provided Metal view may lose its drawable after being
             // occluded, after display sleep, or while the app is inactive.
             // Android does not emit frames for an unchanged screen, so replay
             // the retained texture occasionally to make the view self-heal.
-            let now = ProcessInfo.processInfo.systemUptime
             if newState == .running, now - lastRefreshTime >= 2 {
-                refreshRenderSurface(now: now)
+                refreshRenderSurface(now: now, monitorFailure: true)
             }
 
             if newState == .idle || newState == .failed || newState == .disconnected {
-                activeSerial = nil
-                startRequestedSessionIfPossible()
+                displayPowerRequested = false
+                if activeSerial != nil || attemptedSerial != nil {
+                    let switchedDevice = activeSerial != requestedSerial
+                    activeSerial = nil
+                    attemptedSerial = nil
+                    if switchedDevice {
+                        reconnectAttempt = 0
+                        retryNotBefore = now
+                    } else {
+                        reconnectAttempt += 1
+                        let delay = min(
+                            8.0,
+                            0.5 * pow(2.0, Double(reconnectAttempt - 1))
+                        )
+                        retryNotBefore = now + delay
+                    }
+                }
+                if now >= retryNotBefore {
+                    startRequestedSessionIfPossible()
+                }
             }
         }
 
-        private func refreshRenderSurface(now: TimeInterval? = nil) {
-            guard !renderSuspendedForSheet,
-                  renderWindow?.isVisible == true,
+        private func refreshRenderSurface(
+            now: TimeInterval? = nil,
+            monitorFailure: Bool = false
+        ) {
+            guard renderWindow?.isVisible == true,
                   let session else { return }
+            let refreshTime = now ?? ProcessInfo.processInfo.systemUptime
             if scrcpy_embedded_session_refresh(session) {
-                lastRefreshTime = now ?? ProcessInfo.processInfo.systemUptime
+                consecutiveRenderFailures = 0
+                lastRefreshTime = refreshTime
+            } else if monitorFailure {
+                // Throttle failed refreshes as well. Three consecutive failures
+                // mean the Metal renderer could not restore its retained frame;
+                // restart only this device session so it can create a fresh
+                // SDL renderer and drawable without affecting sibling cards.
+                lastRefreshTime = refreshTime
+                consecutiveRenderFailures += 1
+                if consecutiveRenderFailures >= 3, !renderRecoveryRequested {
+                    renderRecoveryRequested = true
+                    scrcpy_embedded_session_stop(session)
+                }
             }
         }
 
@@ -826,7 +989,8 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             guard initialized,
                   let serial = requestedSerial,
                   activeSerial == nil,
-                  attemptedSerial != serial else { return }
+                  attemptedSerial != serial,
+                  ProcessInfo.processInfo.systemUptime >= retryNotBefore else { return }
 
             guard let session else { return }
             let current = Self.map(scrcpy_embedded_session_get_status(session))
@@ -838,6 +1002,8 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             }
             if started {
                 activeSerial = serial
+                consecutiveRenderFailures = 0
+                renderRecoveryRequested = false
                 stateBinding.wrappedValue = .starting
             } else {
                 stateBinding.wrappedValue = .failed
@@ -860,13 +1026,13 @@ private final class SessionTeardown: @unchecked Sendable {
     private let session: OpaquePointer
     // SDL still owns native references during screen destruction. Keep the
     // hidden render hierarchy alive until the C session has fully exited.
-    private let renderWindow: NSWindow?
+    private let renderWindow: EmbeddedRenderWindow?
     private let renderContainer: NSView?
     private let renderView: ScrcpyRenderView?
 
     init(
         session: OpaquePointer,
-        renderWindow: NSWindow?,
+        renderWindow: EmbeddedRenderWindow?,
         renderContainer: NSView?,
         renderView: ScrcpyRenderView?
     ) {
@@ -878,10 +1044,15 @@ private final class SessionTeardown: @unchecked Sendable {
 
     func destroy() {
         scrcpy_embedded_session_destroy(session)
-        // Ensure AppKit objects retained above are ultimately released on the
-        // main thread rather than by this background work item.
+        // SDL has released its native references now. Explicitly close the
+        // hidden child window on the main thread so WindowServer does not keep
+        // an off-screen surface record after repeated add/remove cycles.
         DispatchQueue.main.async { [self] in
-            withExtendedLifetime(renderWindow) {}
+            if let renderWindow {
+                renderWindow.inputView = nil
+                renderWindow.contentView = nil
+                renderWindow.close()
+            }
             withExtendedLifetime(renderContainer) {}
             withExtendedLifetime(renderView) {}
         }

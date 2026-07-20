@@ -159,6 +159,9 @@ run_session(void *userdata) {
     options.window_aspect_ratio_lock = false;
     options.render_fit = SC_RENDER_FIT_LETTERBOX;
     options.update_terminal_title = false;
+    // Desktop cards are long-lived control surfaces. Simulate user activity
+    // so Android does not time out and replace the captured frame with black.
+    options.keep_active = true;
 
     enum scrcpy_exit_code result = scrcpy(&options);
     free(serial);
@@ -381,6 +384,28 @@ scrcpy_embedded_session_text(struct scrcpy_embedded_session *session,
 }
 
 bool
+scrcpy_embedded_session_set_display_power(
+        struct scrcpy_embedded_session *session, bool on) {
+    assert(SDL_IsMainThread());
+    if (!session) {
+        return false;
+    }
+    struct sc_screen *screen = get_active_screen(session);
+    if (!screen || !screen->controller || screen->camera
+            || screen->disconnected) {
+        return false;
+    }
+
+    struct sc_control_msg msg = {
+        .type = SC_CONTROL_MSG_TYPE_SET_DISPLAY_POWER,
+        .set_display_power = {
+            .on = on,
+        },
+    };
+    return sc_controller_push_msg(screen->controller, &msg);
+}
+
+bool
 sc_embedded_post_event(void *opaque, uint32_t type, void *data) {
     if (!opaque) {
         return sc_push_event_impl(type, data, "embedded event");
@@ -509,14 +534,7 @@ scrcpy_embedded_session_refresh(struct scrcpy_embedded_session *session) {
         return false;
     }
 
-    SDL_Event event = {
-        .window = {
-            .type = SDL_EVENT_WINDOW_EXPOSED,
-            .windowID = SDL_GetWindowID(screen->window),
-        },
-    };
-    sc_screen_handle_event(screen, &event);
-    return true;
+    return sc_screen_refresh(screen);
 }
 
 enum scrcpy_embedded_status
@@ -605,6 +623,25 @@ sc_embedded_screen_init(struct sc_screen *screen,
         dispatch_sync_f(dispatch_get_main_queue(), &ctx, screen_init_on_main);
     }
     return ctx.result;
+}
+
+static void
+screen_hide_on_main(void *userdata) {
+    struct sc_screen *screen = userdata;
+    screen->window_shown = false;
+}
+
+void
+sc_embedded_screen_hide(struct sc_screen *screen) {
+    if (pthread_main_np()) {
+        screen_hide_on_main(screen);
+    } else {
+        // The embedded screen is rendered and pumped on the main thread. Keep
+        // window_shown main-thread-owned as well. This callback is enqueued
+        // before screen destruction, so the screen remains valid until it runs.
+        dispatch_async_f(dispatch_get_main_queue(), screen,
+                         screen_hide_on_main);
+    }
 }
 
 static void
