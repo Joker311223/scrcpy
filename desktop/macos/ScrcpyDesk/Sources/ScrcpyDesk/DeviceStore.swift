@@ -1,12 +1,20 @@
 import Foundation
 
+enum APKInstallState: Equatable {
+    case installing
+    case succeeded
+    case failed
+}
+
 @MainActor
 final class DeviceStore: ObservableObject {
     @Published private(set) var devices: [AndroidDevice] = []
     @Published private(set) var displayedSerials: [String] = []
     @Published private(set) var deviceRemarks: [String: String] = [:]
     @Published private(set) var deviceDeepLinks: [String: String] = [:]
+    @Published private(set) var deviceCardWidths: [String: Double] = [:]
     @Published private(set) var launchingLinkSerials: Set<String> = []
+    @Published private(set) var apkInstallStates: [String: APKInstallState] = [:]
     @Published private(set) var isRefreshing = false
     @Published var notice: String?
     @Published var errorMessage: String?
@@ -19,6 +27,7 @@ final class DeviceStore: ObservableObject {
     private let displayedSerialsKey = "displayedDeviceSerials"
     private let deviceRemarksKey = "deviceRemarks"
     private let deviceDeepLinksKey = "deviceDeepLinks"
+    private let deviceCardWidthsKey = "deviceCardWidths"
 
     init() {
         adbPath = ToolLocator.find("adb")
@@ -32,6 +41,9 @@ final class DeviceStore: ObservableObject {
         deviceDeepLinks = UserDefaults.standard.dictionary(
             forKey: deviceDeepLinksKey
         ) as? [String: String] ?? [:]
+        deviceCardWidths = UserDefaults.standard.dictionary(
+            forKey: deviceCardWidthsKey
+        ) as? [String: Double] ?? [:]
     }
 
     var displayedDevices: [AndroidDevice] {
@@ -90,8 +102,56 @@ final class DeviceStore: ObservableObject {
         UserDefaults.standard.set(deviceDeepLinks, forKey: deviceDeepLinksKey)
     }
 
+    func cardWidth(for device: AndroidDevice, default defaultWidth: CGFloat) -> CGFloat {
+        deviceCardWidths[device.serial].map { CGFloat($0) } ?? defaultWidth
+    }
+
+    func setCardWidth(_ width: CGFloat, for device: AndroidDevice, persist: Bool) {
+        deviceCardWidths[device.serial] = Double(width)
+        if persist {
+            UserDefaults.standard.set(deviceCardWidths, forKey: deviceCardWidthsKey)
+        }
+    }
+
+    func resetCardWidth(for device: AndroidDevice) {
+        deviceCardWidths.removeValue(forKey: device.serial)
+        UserDefaults.standard.set(deviceCardWidths, forKey: deviceCardWidthsKey)
+    }
+
     func isLaunchingLink(on device: AndroidDevice) -> Bool {
         launchingLinkSerials.contains(device.serial)
+    }
+
+    func apkInstallState(for device: AndroidDevice) -> APKInstallState? {
+        apkInstallStates[device.serial]
+    }
+
+    func installAPK(_ apkURL: URL, on device: AndroidDevice) async {
+        guard let adbPath else {
+            errorMessage = environmentMessage
+            return
+        }
+        guard apkURL.pathExtension.localizedCaseInsensitiveCompare("apk") == .orderedSame else {
+            errorMessage = "请选择扩展名为 .apk 的 Android 安装包"
+            return
+        }
+        guard apkInstallStates[device.serial] != .installing else { return }
+
+        notice = nil
+        errorMessage = nil
+        apkInstallStates[device.serial] = .installing
+        do {
+            try await ADBService(executable: adbPath).installAPK(
+                serial: device.serial,
+                apkURL: apkURL
+            )
+            apkInstallStates[device.serial] = .succeeded
+            errorMessage = nil
+            notice = "\(apkURL.lastPathComponent) 已成功安装到 \(displayName(for: device))"
+        } catch {
+            apkInstallStates[device.serial] = .failed
+            errorMessage = error.localizedDescription
+        }
     }
 
     func openConfiguredLink(on device: AndroidDevice) async {

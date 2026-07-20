@@ -240,9 +240,16 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
 //
 // Set the update_content_rect flag if the window or content size may have
 // changed, so that the content rectangle is recomputed
-static void
+static bool
 sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
-    assert(screen->window_shown);
+    if (!screen->window_shown) {
+        // Embedded teardown is asynchronous. A queued Cocoa/SDL lifecycle
+        // event may arrive after the surface has been hidden; it must not make
+        // the whole host application abort. Native scrcpy keeps the stronger
+        // invariant because its event loop and window lifecycle are serialized.
+        assert(screen->embedded);
+        return false;
+    }
 
     if (update_content_rect) {
         sc_screen_update_content_rect(screen);
@@ -250,68 +257,93 @@ sc_screen_render(struct sc_screen *screen, bool update_content_rect) {
 
     SDL_Renderer *renderer = screen->renderer;
     struct sc_screen_bg_color bg = screen->bg;
-    SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 0);
-    sc_sdl_render_clear(renderer);
+    bool result = SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 0);
+    result &= sc_sdl_render_clear(renderer);
 
     SDL_Texture *texture = screen->tex.texture;
-    if (!texture) {
-        goto end;
-    }
-
-    float scale = SDL_GetWindowPixelDensity(screen->window);
-    if (scale == 0) {
-        // Just in case, but in practice the function can only fail when window
-        // is invalid
-        LOGE("Cannot get scale value: %s", SDL_GetError());
-        scale = 1;
-    }
-
-    SDL_FRect geometry = {
-        .x = screen->rect.x * scale,
-        .y = screen->rect.y * scale,
-        .w = screen->rect.w * scale,
-        .h = screen->rect.h * scale,
-    };
-    enum sc_orientation orientation = screen->orientation;
-
-    bool ok = false;
-    if (orientation == SC_ORIENTATION_0) {
-        // always align to a physical pixel
-        geometry.x = (int32_t) geometry.x;
-        geometry.y = (int32_t) geometry.y;
-        ok = SDL_RenderTexture(renderer, texture, NULL, &geometry);
-    } else {
-        unsigned cw_rotation = sc_orientation_get_rotation(orientation);
-        double angle = 90 * cw_rotation;
-
-        SDL_FRect *dstrect = NULL;
-        SDL_FRect rect;
-        if (sc_orientation_is_swap(orientation)) {
-            rect.x = geometry.x + (geometry.w - geometry.h) / 2.f;
-            rect.y = geometry.y + (geometry.h - geometry.w) / 2.f;
-            rect.w = geometry.h;
-            rect.h = geometry.w;
-            dstrect = &rect;
-        } else {
-            dstrect = &geometry;
+    if (texture) {
+        float scale = SDL_GetWindowPixelDensity(screen->window);
+        if (scale == 0) {
+            // Just in case, but in practice the function can only fail when window
+            // is invalid
+            LOGE("Cannot get scale value: %s", SDL_GetError());
+            scale = 1;
         }
 
-        SDL_FlipMode flip = sc_orientation_is_mirror(orientation)
-                              ? SDL_FLIP_HORIZONTAL : 0;
+        SDL_FRect geometry = {
+            .x = screen->rect.x * scale,
+            .y = screen->rect.y * scale,
+            .w = screen->rect.w * scale,
+            .h = screen->rect.h * scale,
+        };
+        enum sc_orientation orientation = screen->orientation;
 
-        // always align to a physical pixel
-        dstrect->x = (int32_t) dstrect->x;
-        dstrect->y = (int32_t) dstrect->y;
-        ok = SDL_RenderTextureRotated(renderer, texture, NULL, dstrect, angle,
-                                      NULL, flip);
+        bool rendered = false;
+        if (orientation == SC_ORIENTATION_0) {
+            // always align to a physical pixel
+            geometry.x = (int32_t) geometry.x;
+            geometry.y = (int32_t) geometry.y;
+            rendered = SDL_RenderTexture(renderer, texture, NULL, &geometry);
+        } else {
+            unsigned cw_rotation = sc_orientation_get_rotation(orientation);
+            double angle = 90 * cw_rotation;
+
+            SDL_FRect *dstrect = NULL;
+            SDL_FRect rect;
+            if (sc_orientation_is_swap(orientation)) {
+                rect.x = geometry.x + (geometry.w - geometry.h) / 2.f;
+                rect.y = geometry.y + (geometry.h - geometry.w) / 2.f;
+                rect.w = geometry.h;
+                rect.h = geometry.w;
+                dstrect = &rect;
+            } else {
+                dstrect = &geometry;
+            }
+
+            SDL_FlipMode flip = sc_orientation_is_mirror(orientation)
+                                  ? SDL_FLIP_HORIZONTAL : 0;
+
+            // always align to a physical pixel
+            dstrect->x = (int32_t) dstrect->x;
+            dstrect->y = (int32_t) dstrect->y;
+            rendered = SDL_RenderTextureRotated(renderer, texture, NULL,
+                                                dstrect, angle, NULL, flip);
+        }
+
+        if (!rendered) {
+            LOGE("Could not render texture: %s", SDL_GetError());
+        }
+        result &= rendered;
     }
 
-    if (!ok) {
-        LOGE("Could not render texture: %s", SDL_GetError());
+    result &= sc_sdl_render_present(renderer);
+    return result;
+}
+
+bool
+sc_screen_refresh(struct sc_screen *screen) {
+    if (!screen->window_shown) {
+        return false;
     }
 
-end:
-    sc_sdl_render_present(renderer);
+    if (sc_screen_render(screen, true)) {
+        return true;
+    }
+
+    // Recreate the texture once from the most recently decoded frame. This
+    // repairs the common Metal drawable/texture invalidation path without
+    // waiting for Android to emit another frame for an otherwise static UI.
+    if (!screen->video || !screen->frame->width || !screen->frame->height) {
+        return false;
+    }
+
+    sc_texture_reset(&screen->tex);
+    if (!sc_texture_set_from_frame(&screen->tex, screen->frame)) {
+        LOGE("Could not rebuild retained texture after refresh failure");
+        return false;
+    }
+
+    return sc_screen_render(screen, true);
 }
 
 static void
@@ -809,9 +841,12 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
 
 void
 sc_screen_hide_window(struct sc_screen *screen) {
-    if (!screen->embedded) {
-        sc_sdl_hide_window(screen->window);
+    if (screen->embedded) {
+        sc_embedded_screen_hide(screen);
+        return;
     }
+
+    sc_sdl_hide_window(screen->window);
     screen->window_shown = false;
 }
 
@@ -962,7 +997,13 @@ sc_screen_set_orientation(struct sc_screen *screen,
 static bool
 sc_screen_apply_frame(struct sc_screen *screen, bool can_resize) {
     assert(screen->video);
-    assert(screen->window_shown);
+    if (!screen->window_shown) {
+        // A final frame can already be queued when an embedded session starts
+        // shutting down. The caller has already consumed the frame buffer, so
+        // dropping it is sufficient and prevents a teardown-time assertion.
+        assert(screen->embedded);
+        return true;
+    }
 
     sc_fps_counter_add_rendered_frame(&screen->fps_counter);
 

@@ -64,4 +64,8 @@ bool
 scrcpy_embedded_session_text(struct scrcpy_embedded_session *session,
                              const char *text);
 
+bool
+scrcpy_embedded_session_set_display_power(
+    struct scrcpy_embedded_session *session, bool on);
+
 #endif

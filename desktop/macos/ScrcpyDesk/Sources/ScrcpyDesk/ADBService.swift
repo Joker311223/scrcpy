@@ -40,6 +40,24 @@ struct ADBService {
         _ = try await checkedRun(["disconnect", serial])
     }
 
+    func installAPK(serial: String, apkURL: URL) async throws {
+        let output = try await checkedRun([
+            "-s", serial,
+            "install", "-r", apkURL.path,
+        ])
+        let message = [output.text, output.errorText]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard message.localizedCaseInsensitiveContains("success") else {
+            throw CommandError.failed(
+                command: "adb -s \(serial) install -r",
+                code: output.exitCode,
+                message: message.isEmpty ? "ADB 未返回安装成功信息" : message
+            )
+        }
+    }
+
     func openURL(serial: String, url: String) async throws {
         let output = try await checkedRun([
             "-s", serial,
