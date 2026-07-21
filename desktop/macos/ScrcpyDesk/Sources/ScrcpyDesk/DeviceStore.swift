@@ -8,6 +8,27 @@ enum APKInstallState: Equatable {
 
 @MainActor
 final class DeviceStore: ObservableObject {
+    private struct InternalStartupDevice {
+        let host: String
+        let port: String
+        let remark: String
+
+        var serial: String { "\(host):\(port)" }
+    }
+
+    private static let internalStartupDevices = [
+        InternalStartupDevice(
+            host: "33.230.81.195",
+            port: "8080",
+            remark: "详情页"
+        ),
+        InternalStartupDevice(
+            host: "33.230.88.55",
+            port: "8080",
+            remark: "列表页"
+        ),
+    ]
+
     @Published private(set) var devices: [AndroidDevice] = []
     @Published private(set) var displayedSerials: [String] = []
     @Published private(set) var deviceRemarks: [String: String] = [:]
@@ -185,13 +206,59 @@ final class DeviceStore: ObservableObject {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
-        await refresh()
+        await prepareInternalStartupDevices()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { break }
                 await self?.refresh()
             }
+        }
+    }
+
+    private func prepareInternalStartupDevices() async {
+        applyInternalStartupDefaults()
+        guard let adbPath else { return }
+
+        let service = ADBService(executable: adbPath)
+        var failures: [String] = []
+        for device in Self.internalStartupDevices {
+            do {
+                _ = try await service.connect(
+                    host: device.host,
+                    port: device.port
+                )
+            } catch {
+                failures.append("\(device.remark)（\(device.serial)）：\(error.localizedDescription)")
+            }
+        }
+
+        await refresh()
+        if !failures.isEmpty {
+            errorMessage = "内部设备预连接失败：\n" + failures.joined(separator: "\n")
+        }
+    }
+
+    private func applyInternalStartupDefaults() {
+        var remarksChanged = false
+        var displayedDevicesChanged = false
+        for device in Self.internalStartupDevices {
+            if deviceRemarks[device.serial]?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty ?? true {
+                deviceRemarks[device.serial] = device.remark
+                remarksChanged = true
+            }
+            if !displayedSerials.contains(device.serial) {
+                displayedSerials.append(device.serial)
+                displayedDevicesChanged = true
+            }
+        }
+        if remarksChanged {
+            UserDefaults.standard.set(deviceRemarks, forKey: deviceRemarksKey)
+        }
+        if displayedDevicesChanged {
+            UserDefaults.standard.set(displayedSerials, forKey: displayedSerialsKey)
         }
     }
 
