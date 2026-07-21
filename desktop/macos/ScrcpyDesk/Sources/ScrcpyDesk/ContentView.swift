@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var store = DeviceStore()
+    @AppStorage("windowAlwaysOnTop") private var isWindowAlwaysOnTop = false
     @State private var isAddingDevice = false
     @State private var renamingDevice: AndroidDevice?
     @State private var remarkText = ""
@@ -18,6 +20,16 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                Toggle(isOn: $isWindowAlwaysOnTop) {
+                    Label(
+                        isWindowAlwaysOnTop ? "取消置顶" : "窗口置顶",
+                        systemImage: isWindowAlwaysOnTop ? "pin.fill" : "pin"
+                    )
+                }
+                .toggleStyle(.button)
+                .foregroundStyle(isWindowAlwaysOnTop ? Color.accentColor : Color.secondary)
+                .help(isWindowAlwaysOnTop ? "取消窗口置顶" : "让窗口始终显示在其他窗口上方")
+
                 Button {
                     Task { await store.refresh() }
                 } label: {
@@ -32,6 +44,10 @@ struct ContentView: View {
                     Label("添加设备", systemImage: "plus")
                 }
             }
+        }
+        .background {
+            WindowLevelConfigurator(isAlwaysOnTop: isWindowAlwaysOnTop)
+                .frame(width: 0, height: 0)
         }
         .sheet(isPresented: $isAddingDevice) {
             AddDeviceView(
@@ -178,6 +194,37 @@ struct ContentView: View {
     }
 }
 
+private struct WindowLevelConfigurator: NSViewRepresentable {
+    let isAlwaysOnTop: Bool
+
+    func makeNSView(context: Context) -> WindowLevelConfiguratorView {
+        let view = WindowLevelConfiguratorView(frame: .zero)
+        view.isAlwaysOnTop = isAlwaysOnTop
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowLevelConfiguratorView, context: Context) {
+        nsView.isAlwaysOnTop = isAlwaysOnTop
+    }
+}
+
+private final class WindowLevelConfiguratorView: NSView {
+    var isAlwaysOnTop = false {
+        didSet {
+            applyWindowLevel()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyWindowLevel()
+    }
+
+    private func applyWindowLevel() {
+        window?.level = isAlwaysOnTop ? .floating : .normal
+    }
+}
+
 private struct DeviceRow: View {
     let device: AndroidDevice
     let displayName: String
@@ -224,10 +271,10 @@ private struct DeviceRow: View {
 }
 
 private struct DeviceGalleryView: View {
-    private let minimumCardWidth: CGFloat = 240
-    private let maximumCardWidth: CGFloat = 640
+    private let minimumCardWidth: CGFloat = 180
 
     @ObservedObject var store: DeviceStore
+    @State private var automaticCardWidths: [String: CGFloat] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -251,6 +298,7 @@ private struct DeviceGalleryView: View {
 
             GeometryReader { proxy in
                 let cardWidth = min(440, max(330, proxy.size.height * 0.57))
+                let maximumCardWidth = max(640, proxy.size.height * 2.5)
                 ScrollView(.horizontal) {
                     HStack(spacing: 18) {
                         ForEach(store.displayedDevices) { device in
@@ -258,12 +306,28 @@ private struct DeviceGalleryView: View {
                                 maximumCardWidth,
                                 max(
                                     minimumCardWidth,
-                                    store.cardWidth(for: device, default: cardWidth)
+                                    store.cardWidth(
+                                        for: device,
+                                        default: automaticCardWidths[device.serial]
+                                            ?? cardWidth
+                                    )
                                 )
                             )
                             DevicePreviewCard(
                                 device: device,
                                 store: store,
+                                preferredWidthDidChange: { preferredWidth in
+                                    let clampedWidth = min(
+                                        maximumCardWidth,
+                                        max(minimumCardWidth, preferredWidth)
+                                    )
+                                    if abs(
+                                        (automaticCardWidths[device.serial] ?? 0)
+                                            - clampedWidth
+                                    ) > 0.5 {
+                                        automaticCardWidths[device.serial] = clampedWidth
+                                    }
+                                },
                                 remove: { store.removeFromDisplay(serial: device.serial) }
                             )
                             .frame(
@@ -273,7 +337,8 @@ private struct DeviceGalleryView: View {
                             .overlay(alignment: .trailing) {
                                 DeviceCardResizeHandle(
                                     width: width,
-                                    defaultWidth: cardWidth,
+                                    defaultWidth: automaticCardWidths[device.serial]
+                                        ?? cardWidth,
                                     minimumWidth: minimumCardWidth,
                                     maximumWidth: maximumCardWidth,
                                     update: {
@@ -337,7 +402,7 @@ private struct DeviceCardResizeHandle: View {
         }
         .frame(width: 14)
         .contentShape(Rectangle())
-        .help("拖动调整设备宽度，双击恢复默认宽度")
+        .help("拖动调整设备宽度，双击恢复自动宽度")
         .onHover { isHovering = $0 }
         .onTapGesture(count: 2, perform: reset)
         .highPriorityGesture(
@@ -402,6 +467,7 @@ private struct DevicePreviewCard: View {
 
     let device: AndroidDevice
     @ObservedObject var store: DeviceStore
+    let preferredWidthDidChange: (CGFloat) -> Void
     let remove: () -> Void
     @State private var sessionState: EmbeddedSessionState = .idle
     @State private var isChoosingAPK = false
@@ -496,7 +562,8 @@ private struct DevicePreviewCard: View {
                         serial: device.serial,
                         adbPath: adbPath,
                         serverPath: serverPath,
-                        state: $sessionState
+                        state: $sessionState,
+                        preferredWidthDidChange: preferredWidthDidChange
                     )
                     .background(Color.black)
 

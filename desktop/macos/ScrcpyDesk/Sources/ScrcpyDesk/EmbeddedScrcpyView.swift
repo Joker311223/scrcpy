@@ -546,9 +546,13 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
     let adbPath: URL
     let serverPath: URL
     @Binding var state: EmbeddedSessionState
+    let preferredWidthDidChange: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(state: $state)
+        Coordinator(
+            state: $state,
+            preferredWidthDidChange: preferredWidthDidChange
+        )
     }
 
     func makeNSView(context: Context) -> ScrcpyHostView {
@@ -570,6 +574,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: ScrcpyHostView, context: Context) {
+        context.coordinator.preferredWidthDidChange = preferredWidthDidChange
         context.coordinator.request(serial: serial)
         context.coordinator.attachIfNeeded(
             view: nsView,
@@ -615,9 +620,15 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
         private var retryNotBefore: TimeInterval = 0
         private var consecutiveRenderFailures = 0
         private var renderRecoveryRequested = false
+        private var lastReportedPreferredWidth: CGFloat?
+        var preferredWidthDidChange: (CGFloat) -> Void
 
-        init(state: Binding<EmbeddedSessionState>) {
+        init(
+            state: Binding<EmbeddedSessionState>,
+            preferredWidthDidChange: @escaping (CGFloat) -> Void
+        ) {
             stateBinding = state
+            self.preferredWidthDidChange = preferredWidthDidChange
         }
 
         func request(serial: String) {
@@ -628,6 +639,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             retryNotBefore = 0
             consecutiveRenderFailures = 0
             renderRecoveryRequested = false
+            lastReportedPreferredWidth = nil
 
             if activeSerial != nil {
                 if let session {
@@ -661,6 +673,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             child.isOpaque = false
             child.hasShadow = false
             child.isMovable = false
+            child.level = window.level
             // Input is routed by the app-wide local event monitor according
             // to each surface's visible clip. Keeping the transparent overlay
             // mouse-transparent prevents its hidden area from blocking the
@@ -753,6 +766,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
                 renderWindow.orderOut(nil)
                 return
             }
+            synchronizeRenderWindowLevel()
             let clipped = full.intersection(visible)
             guard !clipped.isNull, clipped.width > 1, clipped.height > 1 else {
                 renderView.visibleInteractionRect = .zero
@@ -833,12 +847,26 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
         private func updateRenderOrderingForSheet(_ isVisible: Bool) {
             guard let hostWindow, let renderWindow else { return }
             if isVisible, let sheet = hostWindow.attachedSheet {
+                if renderWindow.level.rawValue != sheet.level.rawValue {
+                    renderWindow.level = sheet.level
+                }
                 renderWindow.order(.below, relativeTo: sheet.windowNumber)
                 orderedBelowSheet = sheet
             } else if !isVisible {
+                if renderWindow.level.rawValue != hostWindow.level.rawValue {
+                    renderWindow.level = hostWindow.level
+                }
                 orderedBelowSheet = nil
                 renderWindow.orderFront(nil)
                 refreshRenderSurface()
+            }
+        }
+
+        private func synchronizeRenderWindowLevel() {
+            guard let hostWindow, let renderWindow else { return }
+            let targetLevel = hostWindow.attachedSheet?.level ?? hostWindow.level
+            if renderWindow.level.rawValue != targetLevel.rawValue {
+                renderWindow.level = targetLevel
             }
         }
 
@@ -908,6 +936,7 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
             let rawStatus = scrcpy_embedded_session_pump(session)
             let newState = Self.map(rawStatus)
             stateBinding.wrappedValue = newState
+            reportPreferredWidthIfNeeded()
 
             let now = ProcessInfo.processInfo.systemUptime
 
@@ -983,6 +1012,31 @@ struct EmbeddedScrcpyView: NSViewRepresentable {
                     scrcpy_embedded_session_stop(session)
                 }
             }
+        }
+
+        private func reportPreferredWidthIfNeeded() {
+            guard let session, let hostView, hostView.bounds.height > 1 else {
+                return
+            }
+            var contentWidth: UInt32 = 0
+            var contentHeight: UInt32 = 0
+            guard scrcpy_embedded_session_get_content_size(
+                session,
+                &contentWidth,
+                &contentHeight
+            ), contentWidth > 0, contentHeight > 0 else {
+                return
+            }
+
+            let preferredWidth = hostView.bounds.height
+                * CGFloat(contentWidth) / CGFloat(contentHeight)
+            guard preferredWidth.isFinite, preferredWidth > 1 else { return }
+            if let lastReportedPreferredWidth,
+               abs(lastReportedPreferredWidth - preferredWidth) <= 0.5 {
+                return
+            }
+            lastReportedPreferredWidth = preferredWidth
+            preferredWidthDidChange(preferredWidth)
         }
 
         private func startRequestedSessionIfPossible() {
