@@ -12,9 +12,9 @@
 <p align="center">
   <a href="https://joker311223.github.io/scrcpy/"><strong>官方网站</strong></a>
   ·
-  <a href="https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.3/Scrcpy-Desk-v0.4.3-macOS-arm64.zip"><strong>下载 v0.4.3</strong></a>
+  <a href="https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.4/Scrcpy-Desk-v0.4.4-macOS-arm64.zip"><strong>下载 v0.4.4</strong></a>
   ·
-  <a href="https://github.com/Joker311223/scrcpy/releases/tag/scrcpy-desk-v0.4.3">Release 说明</a>
+  <a href="https://github.com/Joker311223/scrcpy/releases/tag/scrcpy-desk-v0.4.4">Release 说明</a>
   ·
   <a href="desktop/macos/ScrcpyDesk/README.md">使用与构建说明</a>
   ·
@@ -27,16 +27,17 @@
 
 ## 核心能力
 
-- **多设备同时展示与操作**：每台设备拥有独立 scrcpy 会话，通过横向滚动查看更多设备；
+- **多设备同时展示与操作**：每台设备拥有独立 scrcpy 会话，卡片根据真实视频比例自动适配宽度，并通过横向滚动查看更多；
 - **原生内嵌交互**：鼠标、滚轮、键盘、输入法、剪贴板和音频都留在同一个 macOS 面板中；
 - **完整 ADB 设备管理**：支持 USB / Wi-Fi 发现、`adb connect` 与 Android 11+ 无线配对；
 - **设备级工具**：按序列号保存展示状态、备注名和页面跳链，支持一键发送 Android VIEW Intent 及安装 APK；
 - **长时间稳定展示**：弹窗、横向滚动、设备重排和 Metal 表面恢复期间保持画面，并自动重连异常会话；
+- **窗口置顶**：工具栏一键切换主窗口置顶，所有设备画面同步保持正确层级；
 - **无需 Android 端安装应用**：沿用 scrcpy 的连接与控制方式，不会在设备上长期留下应用。
 
-## 下载 Scrcpy Desk 0.4.3 Beta
+## 下载 Scrcpy Desk 0.4.4 Beta
 
-[下载 Apple Silicon macOS ZIP](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.3/Scrcpy-Desk-v0.4.3-macOS-arm64.zip) · [SHA-256](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.3/Scrcpy-Desk-v0.4.3-macOS-arm64.zip.sha256)
+[下载 Apple Silicon macOS ZIP](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.4/Scrcpy-Desk-v0.4.4-macOS-arm64.zip) · [SHA-256](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.4/Scrcpy-Desk-v0.4.4-macOS-arm64.zip.sha256)
 
 当前 Beta 版本运行前需要安装动态库：`brew install ffmpeg sdl3`。详细安装与首次打开说明请查看[官方网站](https://joker311223.github.io/scrcpy/#download)。
 
