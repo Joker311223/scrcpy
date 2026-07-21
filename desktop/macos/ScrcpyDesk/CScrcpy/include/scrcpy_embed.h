@@ -37,6 +37,11 @@ enum scrcpy_embedded_status
 scrcpy_embedded_session_get_status(struct scrcpy_embedded_session *session);
 
 bool
+scrcpy_embedded_session_get_content_size(
+    struct scrcpy_embedded_session *session,
+    uint32_t *width, uint32_t *height);
+
+bool
 scrcpy_embedded_session_refresh(struct scrcpy_embedded_session *session);
 
 bool

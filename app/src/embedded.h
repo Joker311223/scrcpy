@@ -44,6 +44,14 @@ scrcpy_embedded_session_pump(struct scrcpy_embedded_session *session);
 enum scrcpy_embedded_status
 scrcpy_embedded_session_get_status(struct scrcpy_embedded_session *session);
 
+// Return the current oriented Android video size. The dimensions become
+// available after the first frame and change when the device rotates.
+// Must be called from the main thread.
+bool
+scrcpy_embedded_session_get_content_size(
+    struct scrcpy_embedded_session *session,
+    uint32_t *width, uint32_t *height);
+
 // Redraw the last decoded frame. This is used by native hosts after Cocoa may
 // have discarded the backing surface while the Android display was static.
 // Must be called from the main thread.

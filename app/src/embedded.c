@@ -282,6 +282,26 @@ get_active_screen(struct scrcpy_embedded_session *session) {
     return screen;
 }
 
+bool
+scrcpy_embedded_session_get_content_size(
+        struct scrcpy_embedded_session *session,
+        uint32_t *width, uint32_t *height) {
+    assert(SDL_IsMainThread());
+    if (!session || !width || !height) {
+        return false;
+    }
+
+    struct sc_screen *screen = get_active_screen(session);
+    if (!screen || !screen->content_size.width
+            || !screen->content_size.height) {
+        return false;
+    }
+
+    *width = screen->content_size.width;
+    *height = screen->content_size.height;
+    return true;
+}
+
 static bool
 dispatch_input_event(struct scrcpy_embedded_session *session,
                      SDL_Event *event) {
