@@ -23,8 +23,9 @@
 
 - macOS 13 或更高版本；
 - Swift 5.10 或更高版本；
-- ADB（构建脚本会将当前 PATH 中的 `adb` 复制进 App）；
-- Homebrew 版 FFmpeg 与 SDL3 开发库（`brew install ffmpeg sdl3`）。
+- ADB（构建脚本会将当前 PATH 中的 `adb` 复制进 App）。
+
+构建脚本会在打包前检查 CMake、Meson、Ninja、NASM 和 pkg-config，缺少时通过 Homebrew 自动安装；FFmpeg、SDL3 与 dav1d 会按 macOS 13 目标从源码构建并内置到 App。发布后的 App 已包含这些运行依赖，使用者无需安装 Homebrew、FFmpeg 或 SDL3。
 
 ## 开发运行
 

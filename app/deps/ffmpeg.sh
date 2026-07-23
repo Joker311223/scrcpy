@@ -38,12 +38,12 @@ else
         export CFLAGS='-static-libgcc -static'
         export CXXFLAGS="$CFLAGS"
         export LDFLAGS='-static-libgcc -static'
-    elif [[ "$HOST" == "macos" ]]
-    then
-        export PKG_CONFIG_PATH="/opt/homebrew/opt/zlib/lib/pkgconfig"
     fi
 
-    export PKG_CONFIG_PATH="$INSTALL_DIR/$DIRNAME/lib/pkgconfig:$PKG_CONFIG_PATH"
+    # Keep portable builds isolated from globally installed Homebrew packages.
+    # libdav1d is installed in this prefix by the dependency preparation step.
+    unset PKG_CONFIG_PATH
+    export PKG_CONFIG_LIBDIR="$INSTALL_DIR/$DIRNAME/lib/pkgconfig"
 
     conf=(
         --prefix="$INSTALL_DIR/$DIRNAME"
@@ -55,6 +55,7 @@ else
         --disable-avfilter
         --disable-network
         --disable-everything
+        --disable-autodetect
         --disable-vulkan
         --disable-vaapi
         --disable-vdpau

@@ -1,6 +1,22 @@
 // swift-tools-version: 5.10
 
+import Foundation
 import PackageDescription
+
+let environment = ProcessInfo.processInfo.environment
+let portableDependenciesPrefix = environment["SCRCPY_DESK_DEPS_PREFIX"]
+let dependencyIncludeFlags = portableDependenciesPrefix.map {
+    ["-I\($0)/include"]
+} ?? [
+    "-I/opt/homebrew/include",
+    "-I/usr/local/include",
+]
+let dependencyLinkerFlags = portableDependenciesPrefix.map {
+    ["-L\($0)/lib"]
+} ?? [
+    "-L/opt/homebrew/lib",
+    "-L/usr/local/lib",
+]
 
 let scrcpySources = [
     "app/src/adb/adb.c",
@@ -82,6 +98,7 @@ let package = Package(
         .target(
             name: "CScrcpy",
             path: ".",
+            exclude: ["app/deps/work"],
             sources: scrcpySources,
             publicHeadersPath: "desktop/macos/ScrcpyDesk/CScrcpy/include",
             cSettings: [
@@ -92,12 +109,10 @@ let package = Package(
                     "-D_GNU_SOURCE",
                     "-D_POSIX_C_SOURCE=200809L",
                     "-D_XOPEN_SOURCE=700",
-                    "-I/opt/homebrew/include",
-                    "-I/usr/local/include",
-                ]),
+                ] + dependencyIncludeFlags),
             ],
             linkerSettings: [
-                .unsafeFlags(["-L/opt/homebrew/lib", "-L/usr/local/lib"]),
+                .unsafeFlags(dependencyLinkerFlags),
                 .linkedLibrary("avformat"),
                 .linkedLibrary("avcodec"),
                 .linkedLibrary("avutil"),

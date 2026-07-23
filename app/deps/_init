@@ -70,7 +70,16 @@ get_file() {
         echo "$file: found"
     else
         echo "$file: not found, downloading..."
-        wget "$url" -O "$file"
+        if command -v curl >/dev/null 2>&1
+        then
+            curl --fail --location "$url" --output "$file"
+        elif command -v wget >/dev/null 2>&1
+        then
+            wget "$url" -O "$file"
+        else
+            echo "Neither curl nor wget is available" >&2
+            exit 1
+        fi
     fi
     checksum "$file" "$sum"
 }
