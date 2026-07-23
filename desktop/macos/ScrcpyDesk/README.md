@@ -1,6 +1,6 @@
 # Scrcpy Desk for macOS
 
-> [官方网站](https://joker311223.github.io/scrcpy/) · [下载 v0.4.4](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.4/Scrcpy-Desk-v0.4.4-macOS-arm64.zip) · [Release 说明](https://github.com/Joker311223/scrcpy/releases/tag/scrcpy-desk-v0.4.4) · [网站源码](../../../docs/) · [上游 scrcpy](https://github.com/Genymobile/scrcpy)
+> [官方网站](https://joker311223.github.io/scrcpy/) · [下载 v0.4.5](https://github.com/Joker311223/scrcpy/releases/download/scrcpy-desk-v0.4.5/Scrcpy-Desk-v0.4.5-macOS-arm64.zip) · [Release 说明](https://github.com/Joker311223/scrcpy/releases/tag/scrcpy-desk-v0.4.5) · [网站源码](../../../docs/) · [上游 scrcpy](https://github.com/Genymobile/scrcpy)
 
 `Scrcpy Desk` 是基于 scrcpy 开发的 macOS SwiftUI 多设备控制台：
 
